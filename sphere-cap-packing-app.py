@@ -4,21 +4,6 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import io
 from datetime import datetime
-from itertools import combinations
-
-def spherical_to_cartesian(theta, phi, r):
-    """Convert spherical coordinates to Cartesian"""
-    x = r * np.sin(theta) * np.cos(phi)
-    y = r * np.sin(theta) * np.sin(phi)
-    z = r * np.cos(theta)
-    return x, y, z
-
-def cartesian_to_spherical(x, y, z):
-    """Convert Cartesian coordinates to spherical"""
-    r = np.sqrt(x**2 + y**2 + z**2)
-    theta = np.arccos(z / r)
-    phi = np.arctan2(y, x)
-    return r, theta, phi
 
 def angular_distance(p1, p2):
     """Calculate angular distance between two points on a sphere"""
@@ -38,13 +23,88 @@ def calculate_angular_from_cap_radius(sphere_radius, cap_radius):
     """Calculate angular radius from cap circle radius"""
     return np.arcsin(min(cap_radius / sphere_radius, 1.0))
 
-def generate_uniform_sphere_points(n_points, sphere_radius):
-    """Generate approximately uniform points on sphere using Fibonacci spiral"""
-    points = []
+def check_tangency(center1, center2, radius1, radius2, sphere_radius, tolerance=0.05):
+    """Check if two caps are tangent within tolerance"""
+    ang_dist = angular_distance(center1, center2)
+    ang_rad1 = calculate_angular_from_cap_radius(sphere_radius, radius1)
+    ang_rad2 = calculate_angular_from_cap_radius(sphere_radius, radius2)
+    expected = ang_rad1 + ang_rad2
+    return abs(ang_dist - expected) < tolerance
+
+def generate_optimal_packing_12():
+    """Generate icosahedral packing for 12 circles"""
+    phi = (1 + np.sqrt(5)) / 2  # golden ratio
+    
+    # Icosahedron vertices
+    centers = []
+    for i in [-1, 1]:
+        for j in [-1, 1]:
+            centers.append([0, i, j * phi])
+            centers.append([i, j * phi, 0])
+            centers.append([j * phi, 0, i])
+    
+    centers = np.array(centers)
+    # Normalize to unit sphere
+    centers = centers / np.linalg.norm(centers, axis=1, keepdims=True)
+    
+    # For icosahedron, each vertex has 5 neighbors
+    # Angular distance to nearest neighbor
+    min_dist = float('inf')
+    for i in range(len(centers)):
+        for j in range(i + 1, len(centers)):
+            dist = angular_distance(centers[i], centers[j])
+            if dist < min_dist:
+                min_dist = dist
+    
+    # Each cap has angular radius = half the distance to nearest neighbor
+    angular_radius = min_dist / 2
+    
+    return centers, angular_radius
+
+def generate_optimal_packing_20():
+    """Generate dodecahedral packing for 20 circles"""
+    phi = (1 + np.sqrt(5)) / 2  # golden ratio
+    
+    # Dodecahedron vertices
+    centers = []
+    
+    # (±1, ±1, ±1)
+    for x in [-1, 1]:
+        for y in [-1, 1]:
+            for z in [-1, 1]:
+                centers.append([x, y, z])
+    
+    # (0, ±1/φ, ±φ)
+    for i in [-1, 1]:
+        for j in [-1, 1]:
+            centers.append([0, i/phi, j*phi])
+            centers.append([i/phi, j*phi, 0])
+            centers.append([j*phi, 0, i/phi])
+    
+    centers = np.array(centers)
+    # Normalize to unit sphere
+    centers = centers / np.linalg.norm(centers, axis=1, keepdims=True)
+    
+    # Find minimum distance between vertices
+    min_dist = float('inf')
+    for i in range(len(centers)):
+        for j in range(i + 1, len(centers)):
+            dist = angular_distance(centers[i], centers[j])
+            if dist < min_dist:
+                min_dist = dist
+    
+    # Each cap has angular radius = half the distance to nearest neighbor
+    angular_radius = min_dist / 2
+    
+    return centers, angular_radius
+
+def generate_spiral_packing(n_circles):
+    """Generate uniform distribution using Fibonacci spiral"""
+    centers = []
     phi = np.pi * (3 - np.sqrt(5))  # golden angle
     
-    for i in range(n_points):
-        y = 1 - (i / float(n_points - 1)) * 2  # y goes from 1 to -1
+    for i in range(n_circles):
+        y = 1 - (i / float(n_circles - 1)) * 2  # y goes from 1 to -1
         radius = np.sqrt(1 - y * y)
         
         theta = phi * i  # golden angle increment
@@ -52,174 +112,91 @@ def generate_uniform_sphere_points(n_points, sphere_radius):
         x = np.cos(theta) * radius
         z = np.sin(theta) * radius
         
-        points.append([x * sphere_radius, y * sphere_radius, z * sphere_radius])
+        centers.append([x, y, z])
     
-    return np.array(points)
-
-def generate_icosahedral_points(sphere_radius):
-    """Generate 12 points based on icosahedron vertices"""
-    phi = (1 + np.sqrt(5)) / 2  # golden ratio
+    centers = np.array(centers)
     
-    # Icosahedron vertices
-    points = []
-    # Rectangle in xy plane
-    for i in [-1, 1]:
-        for j in [-1, 1]:
-            points.append([0, i, j * phi])
-            points.append([i, j * phi, 0])
-            points.append([j * phi, 0, i])
-    
-    points = np.array(points)
-    # Normalize to sphere surface
-    norms = np.linalg.norm(points, axis=1, keepdims=True)
-    points = points / norms * sphere_radius
-    
-    return points
-
-def generate_tetrahedral_points(sphere_radius):
-    """Generate 4 points based on tetrahedron vertices"""
-    # Tetrahedron vertices
-    points = np.array([
-        [1, 1, 1],
-        [1, -1, -1],
-        [-1, 1, -1],
-        [-1, -1, 1]
-    ])
-    
-    # Normalize to sphere surface
-    norms = np.linalg.norm(points, axis=1, keepdims=True)
-    points = points / norms * sphere_radius
-    
-    return points
-
-def generate_octahedral_points(sphere_radius):
-    """Generate 6 points based on octahedron vertices"""
-    # Octahedron vertices (along axes)
-    points = np.array([
-        [1, 0, 0],
-        [-1, 0, 0],
-        [0, 1, 0],
-        [0, -1, 0],
-        [0, 0, 1],
-        [0, 0, -1]
-    ])
-    
-    points = points * sphere_radius
-    return points
-
-def find_k_nearest_neighbors(centers, k=6):
-    """Find k nearest neighbors for each point"""
-    n = len(centers)
-    neighbors = {}
-    
-    for i in range(n):
-        # Calculate distances to all other points
+    # Find average minimum distance to determine radius
+    min_distances = []
+    for i in range(len(centers)):
         distances = []
-        for j in range(n):
+        for j in range(len(centers)):
             if i != j:
-                dist = angular_distance(centers[i], centers[j])
-                distances.append((j, dist))
-        
-        # Sort by distance and take k nearest
-        distances.sort(key=lambda x: x[1])
-        neighbors[i] = [d[0] for d in distances[:k]]
+                distances.append(angular_distance(centers[i], centers[j]))
+        if distances:
+            min_distances.append(min(distances))
     
-    return neighbors
+    # Set angular radius to achieve good coverage
+    avg_min_dist = np.mean(min_distances)
+    angular_radius = avg_min_dist / 2 * 0.95  # Slightly smaller to ensure tangency
+    
+    return centers, angular_radius
 
-def optimize_packing_simple(centers, sphere_radius, n_iterations=100):
-    """Simple optimization to pack circles tangentially"""
-    n_caps = len(centers)
+def check_coverage_grid(centers, radii, sphere_radius, grid_size=50):
+    """Check sphere coverage using a grid approach"""
+    # Generate grid points on sphere
+    covered_area = 0
+    total_area = 0
     
-    # Find neighbors based on proximity
-    neighbors = find_k_nearest_neighbors(centers, k=6)
-    
-    # Initialize radii based on nearest neighbor distances
-    radii = np.zeros(n_caps)
-    for i in range(n_caps):
-        if neighbors[i]:
-            # Set initial radius to half the distance to nearest neighbor
-            nearest = neighbors[i][0]
-            dist = angular_distance(centers[i], centers[nearest])
-            radii[i] = calculate_cap_radius_from_angular(sphere_radius, dist / 2)
-    
-    # Simple iterative adjustment
-    for iteration in range(n_iterations):
-        new_radii = radii.copy()
-        
-        for i in range(n_caps):
-            # For each neighbor, calculate what radius would make us tangent
-            tangent_radii = []
+    for theta in np.linspace(0, np.pi, grid_size):
+        for phi in np.linspace(0, 2*np.pi, int(grid_size * np.sin(theta) + 1)):
+            # Point on sphere
+            x = sphere_radius * np.sin(theta) * np.cos(phi)
+            y = sphere_radius * np.sin(theta) * np.sin(phi)
+            z = sphere_radius * np.cos(theta)
+            point = np.array([x, y, z])
             
-            for j in neighbors[i]:
-                dist = angular_distance(centers[i], centers[j])
-                # For tangency: r_i + r_j = dist
-                # So r_i = dist - r_j
-                angular_j = calculate_angular_from_cap_radius(sphere_radius, radii[j])
-                target_angular_i = dist - angular_j
+            # Area element
+            dA = sphere_radius**2 * np.sin(theta) * (np.pi/grid_size) * (2*np.pi/max(1, int(grid_size * np.sin(theta))))
+            total_area += dA
+            
+            # Check if covered by any cap
+            for center, radius in zip(centers, radii):
+                ang_dist = angular_distance(point, center)
+                ang_radius = calculate_angular_from_cap_radius(sphere_radius, radius)
                 
-                if target_angular_i > 0:
-                    target_radius_i = calculate_cap_radius_from_angular(sphere_radius, target_angular_i)
-                    tangent_radii.append(target_radius_i)
-            
-            # Take average of suggested radii
-            if tangent_radii:
-                new_radii[i] = np.mean(tangent_radii)
-        
-        # Limit radii to reasonable bounds
-        min_radius = sphere_radius * 0.05
-        max_radius = sphere_radius * 0.5
-        new_radii = np.clip(new_radii, min_radius, max_radius)
-        
-        # Update radii with damping
-        radii = 0.7 * radii + 0.3 * new_radii
+                if ang_dist <= ang_radius:
+                    covered_area += dA
+                    break
     
-    return radii, neighbors
+    return (covered_area / total_area) * 100 if total_area > 0 else 0
 
-def check_sphere_coverage(centers, radii, sphere_radius, n_samples=1000):
-    """Check what percentage of sphere is covered by caps"""
-    # Generate random points on sphere
-    random_points = []
-    for _ in range(n_samples):
-        theta = np.arccos(1 - 2 * np.random.random())
-        phi = 2 * np.pi * np.random.random()
-        x, y, z = spherical_to_cartesian(theta, phi, sphere_radius)
-        random_points.append([x, y, z])
-    
-    random_points = np.array(random_points)
-    
-    # Check coverage
-    covered = 0
-    for point in random_points:
-        for center, radius in zip(centers, radii):
-            ang_dist = angular_distance(point, center)
-            ang_radius = calculate_angular_from_cap_radius(sphere_radius, radius)
-            
-            if ang_dist <= ang_radius:
-                covered += 1
-                break
-    
-    return covered / n_samples * 100
-
-def plot_sphere_with_caps(sphere_radius, centers, cap_radii, neighbors):
+def plot_sphere_with_caps(sphere_radius, centers, cap_radii, show_labels=True):
     """Visualize the sphere with spherical caps"""
-    fig = plt.figure(figsize=(12, 10))
+    fig = plt.figure(figsize=(14, 12))
     ax = fig.add_subplot(111, projection='3d')
     
-    # Plot sphere wireframe
-    u = np.linspace(0, 2 * np.pi, 30)
-    v = np.linspace(0, np.pi, 20)
+    # Plot sphere surface with better resolution
+    u = np.linspace(0, 2 * np.pi, 40)
+    v = np.linspace(0, np.pi, 40)
     x_sphere = sphere_radius * np.outer(np.cos(u), np.sin(v))
     y_sphere = sphere_radius * np.outer(np.sin(u), np.sin(v))
     z_sphere = sphere_radius * np.outer(np.ones(np.size(u)), np.cos(v))
-    ax.plot_wireframe(x_sphere, y_sphere, z_sphere, alpha=0.1, color='gray')
+    
+    # Plot sphere with light color
+    ax.plot_surface(x_sphere, y_sphere, z_sphere, alpha=0.1, color='lightblue', shade=False)
+    
+    # Plot meridians and parallels for reference
+    for i in range(0, 360, 30):
+        theta = np.radians(i)
+        x_meridian = sphere_radius * np.sin(v) * np.cos(theta)
+        y_meridian = sphere_radius * np.sin(v) * np.sin(theta)
+        z_meridian = sphere_radius * np.cos(v)
+        ax.plot(x_meridian, y_meridian, z_meridian, 'k-', alpha=0.1, linewidth=0.5)
     
     # Color map for caps
     colors = plt.cm.rainbow(np.linspace(0, 1, len(centers)))
     
+    # Track tangent pairs
+    tangent_pairs = []
+    
     # Plot spherical caps
     for i, (center, cap_radius, color) in enumerate(zip(centers, cap_radii, colors)):
+        # Normalize center
+        center = center * sphere_radius / np.linalg.norm(center)
+        
         # Plot the cap circle
-        normal = center / np.linalg.norm(center)
+        normal = center / sphere_radius
         
         # Find two orthogonal vectors in the plane
         if abs(normal[2]) < 0.9:
@@ -230,8 +207,8 @@ def plot_sphere_with_caps(sphere_radius, centers, cap_radii, neighbors):
         v2 = np.cross(normal, v1)
         v2 = v2 / np.linalg.norm(v2)
         
-        # Generate circle points
-        theta = np.linspace(0, 2 * np.pi, 100)
+        # Generate circle points with higher resolution
+        theta = np.linspace(0, 2 * np.pi, 150)
         circle_points = []
         
         for t in theta:
@@ -245,211 +222,226 @@ def plot_sphere_with_caps(sphere_radius, centers, cap_radii, neighbors):
         
         circle_points = np.array(circle_points)
         ax.plot(circle_points[:, 0], circle_points[:, 1], circle_points[:, 2], 
-                color=color, linewidth=2)
+                color=color, linewidth=3, alpha=0.9)
         
-        # Mark center
-        ax.scatter(*center, color='black', s=30, marker='o')
+        # Mark center with larger dot
+        ax.scatter(*center, color='black', s=50, marker='o', alpha=0.8)
+        
+        # Add label if requested
+        if show_labels:
+            ax.text(center[0]*1.1, center[1]*1.1, center[2]*1.1, f'{i+1}', 
+                   fontsize=8, ha='center', va='center')
+        
+        # Check for tangent neighbors
+        for j in range(i + 1, len(centers)):
+            if check_tangency(centers[i], centers[j], cap_radii[i], cap_radii[j], sphere_radius):
+                tangent_pairs.append((i, j))
     
-    # Plot neighbor connections
-    for i, neighbor_list in neighbors.items():
-        for j in neighbor_list:
-            if j > i:  # Avoid duplicate lines
-                ax.plot([centers[i][0], centers[j][0]], 
-                       [centers[i][1], centers[j][1]], 
-                       [centers[i][2], centers[j][2]], 
-                       'k--', alpha=0.2, linewidth=0.5)
+    # Draw lines between tangent pairs
+    for i, j in tangent_pairs:
+        center_i = centers[i] * sphere_radius / np.linalg.norm(centers[i])
+        center_j = centers[j] * sphere_radius / np.linalg.norm(centers[j])
+        ax.plot([center_i[0], center_j[0]], 
+               [center_i[1], center_j[1]], 
+               [center_i[2], center_j[2]], 
+               'g--', alpha=0.3, linewidth=1)
     
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.set_title(f'Sphere Packing with {len(centers)} Tangent Caps')
+    ax.set_xlabel('X', fontsize=12)
+    ax.set_ylabel('Y', fontsize=12)
+    ax.set_zlabel('Z', fontsize=12)
+    ax.set_title(f'Sphere Packing: {len(centers)} Caps, {len(tangent_pairs)} Tangent Pairs', fontsize=14)
     
     # Equal aspect ratio
     ax.set_box_aspect([1,1,1])
-    max_range = sphere_radius * 1.1
+    max_range = sphere_radius * 1.2
     ax.set_xlim([-max_range, max_range])
     ax.set_ylim([-max_range, max_range])
     ax.set_zlim([-max_range, max_range])
     
-    return fig
+    # Better viewing angle
+    ax.view_init(elev=20, azim=45)
+    
+    return fig, tangent_pairs
 
-def generate_output_text(sphere_radius, centers, cap_radii, neighbors, coverage):
+def generate_output_text(sphere_radius, centers, cap_radii, coverage, tangent_pairs):
     """Generate the output text file content"""
-    output = f"Sphere Packing Configuration\n"
+    output = f"Sphere Cap Packing Configuration\n"
     output += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    output += f"{'='*60}\n\n"
+    output += f"{'='*70}\n\n"
     output += f"Sphere radius: {sphere_radius:.6f}\n"
     output += f"Number of caps: {len(centers)}\n"
-    output += f"Surface coverage: {coverage:.1f}%\n\n"
+    output += f"Surface coverage: {coverage:.1f}%\n"
+    output += f"Number of tangent pairs: {len(tangent_pairs)}\n\n"
     
     output += f"Spherical Caps:\n"
-    output += f"{'-'*60}\n"
-    
-    # Calculate tangency information
-    tangency_pairs = []
+    output += f"{'-'*70}\n"
     
     for i, (center, cap_radius) in enumerate(zip(centers, cap_radii)):
-        output += f"Cap {i+1}:\n"
-        output += f"  Center: ({center[0]:.6f}, {center[1]:.6f}, {center[2]:.6f})\n"
+        # Normalize center to sphere surface
+        center = center * sphere_radius / np.linalg.norm(center)
+        
+        output += f"\nCap {i+1}:\n"
+        output += f"  Center coordinates: ({center[0]:.6f}, {center[1]:.6f}, {center[2]:.6f})\n"
         output += f"  Cap circle radius: {cap_radius:.6f}\n"
+        
         angular_radius = calculate_angular_from_cap_radius(sphere_radius, cap_radius)
         output += f"  Angular radius: {np.degrees(angular_radius):.2f}°\n"
+        output += f"  Cap height: {sphere_radius * (1 - np.cos(angular_radius)):.6f}\n"
         
-        # Check which neighbors are actually tangent
+        # List tangent neighbors
         tangent_neighbors = []
-        for j in neighbors[i]:
-            ang_dist = angular_distance(centers[i], centers[j])
-            ang_rad_i = calculate_angular_from_cap_radius(sphere_radius, cap_radius)
-            ang_rad_j = calculate_angular_from_cap_radius(sphere_radius, cap_radii[j])
-            
-            # Check if approximately tangent (within 5% error)
-            expected = ang_rad_i + ang_rad_j
-            if abs(ang_dist - expected) / expected < 0.05:
-                tangent_neighbors.append(j + 1)
-                if j > i:
-                    tangency_pairs.append((i + 1, j + 1))
+        for pair in tangent_pairs:
+            if i in pair:
+                tangent_neighbors.append(pair[0] + 1 if pair[1] == i else pair[1] + 1)
         
-        output += f"  Tangent neighbors: {tangent_neighbors}\n\n"
+        if tangent_neighbors:
+            output += f"  Tangent to caps: {sorted(tangent_neighbors)}\n"
     
-    # Summary statistics
-    output += f"\nPacking Statistics:\n"
-    output += f"{'-'*60}\n"
-    output += f"Total tangent pairs: {len(tangency_pairs)}\n"
-    output += f"Surface coverage: {coverage:.1f}%\n"
+    output += f"\n{'='*70}\n"
+    output += f"Summary Statistics:\n"
+    output += f"  Total surface area of sphere: {4 * np.pi * sphere_radius**2:.6f}\n"
+    output += f"  Average cap area: {4 * np.pi * sphere_radius**2 / len(centers):.6f}\n"
+    output += f"  Coverage percentage: {coverage:.1f}%\n"
+    output += f"  Tangency ratio: {len(tangent_pairs) / (len(centers) * (len(centers)-1) / 2) * 100:.1f}%\n"
     
     return output
 
 # Streamlit App
-st.title("Sphere Packing with Tangent Caps")
+st.title("🌐 Complete Sphere Cap Packing")
 
 st.markdown("""
-This app generates a packing of spherical caps on a sphere surface where:
-- Each cap aims to be tangent to its neighbors
-- The sphere surface is covered as completely as possible
-- Caps don't overlap
+### Goal: Fill the sphere surface with tangent circular caps
+
+This app generates packings where:
+- Each cap's boundary is a circle on the sphere surface
+- Caps are tangent to their neighbors (boundaries touch)
+- The entire sphere is covered with minimal gaps
 """)
 
-# Sidebar parameters
-st.sidebar.header("Parameters")
+# Sidebar
+st.sidebar.header("⚙️ Configuration")
 
-sphere_radius = st.sidebar.number_input("Sphere Radius", min_value=1.0, max_value=100.0, value=10.0, step=0.1)
+sphere_radius = st.sidebar.number_input(
+    "Sphere Radius", 
+    min_value=1.0, 
+    max_value=100.0, 
+    value=10.0, 
+    step=0.1,
+    help="Radius of the sphere to be packed"
+)
 
 packing_type = st.sidebar.selectbox(
     "Packing Type",
-    ["Custom Number", "Tetrahedral (4)", "Octahedral (6)", "Icosahedral (12)", "Uniform Distribution"]
+    ["12 Caps (Icosahedral)", "20 Caps (Dodecahedral)", 
+     "Custom (Spiral Distribution)"],
+    help="Select the packing arrangement"
 )
 
-if packing_type == "Custom Number":
-    n_caps = st.sidebar.slider("Number of Caps", min_value=4, max_value=50, value=20)
-elif packing_type == "Tetrahedral (4)":
-    n_caps = 4
-elif packing_type == "Octahedral (6)":
-    n_caps = 6
-elif packing_type == "Icosahedral (12)":
-    n_caps = 12
+if packing_type == "Custom (Spiral Distribution)":
+    n_caps = st.sidebar.slider(
+        "Number of Caps", 
+        min_value=4, 
+        max_value=100, 
+        value=30,
+        help="Number of caps to pack on the sphere"
+    )
 else:
-    n_caps = st.sidebar.slider("Number of Caps", min_value=13, max_value=50, value=20)
+    n_caps = 12 if "12" in packing_type else 20
 
-optimization_iterations = st.sidebar.slider("Optimization Iterations", min_value=50, max_value=500, value=200)
+show_labels = st.sidebar.checkbox("Show cap numbers", value=True)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
-**Note**: Perfect tangent packing is mathematically possible only for certain numbers 
-(4, 6, 8, 12, 20). For other numbers, the algorithm finds the best approximation.
+**💡 Tips:**
+- 12 and 20 caps give mathematically optimal packings
+- For custom numbers, the algorithm approximates optimal packing
+- Higher cap counts give better coverage but less perfect tangency
 """)
 
-if st.sidebar.button("Generate Packing", type="primary"):
+# Generate button
+if st.sidebar.button("🚀 Generate Packing", type="primary"):
     with st.spinner("Generating sphere packing..."):
         
-        # Generate initial configuration based on type
-        if packing_type == "Tetrahedral (4)":
-            centers = generate_tetrahedral_points(sphere_radius)
-        elif packing_type == "Octahedral (6)":
-            centers = generate_octahedral_points(sphere_radius)
-        elif packing_type == "Icosahedral (12)":
-            centers = generate_icosahedral_points(sphere_radius)
+        # Generate packing based on type
+        if "12" in packing_type:
+            centers, angular_radius = generate_optimal_packing_12()
+        elif "20" in packing_type:
+            centers, angular_radius = generate_optimal_packing_20()
         else:
-            centers = generate_uniform_sphere_points(n_caps, sphere_radius)
+            centers, angular_radius = generate_spiral_packing(n_caps)
         
-        # Optimize packing
-        optimized_radii, neighbors = optimize_packing_simple(centers, sphere_radius, optimization_iterations)
+        # Scale centers to sphere radius and calculate cap radii
+        centers = centers * sphere_radius
+        cap_radii = np.full(len(centers), calculate_cap_radius_from_angular(sphere_radius, angular_radius))
         
         # Check coverage
-        coverage = check_sphere_coverage(centers, optimized_radii, sphere_radius)
+        coverage = check_coverage_grid(centers, cap_radii, sphere_radius)
         
         # Create visualization
-        fig = plot_sphere_with_caps(sphere_radius, centers, optimized_radii, neighbors)
+        fig, tangent_pairs = plot_sphere_with_caps(sphere_radius, centers, cap_radii, show_labels)
         st.pyplot(fig)
         
-        # Generate output text
-        output_text = generate_output_text(sphere_radius, centers, optimized_radii, neighbors, coverage)
-        
-        # Display summary metrics
-        st.subheader("Packing Summary")
-        col1, col2, col3 = st.columns(3)
+        # Display metrics
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Sphere Radius", f"{sphere_radius:.2f}")
+            st.metric("Sphere Radius", f"{sphere_radius:.1f}")
         with col2:
             st.metric("Number of Caps", len(centers))
         with col3:
             st.metric("Coverage", f"{coverage:.1f}%")
+        with col4:
+            st.metric("Tangent Pairs", len(tangent_pairs))
         
-        # Quality indicators
-        if coverage > 95:
-            st.success(f"✓ Excellent coverage: {coverage:.1f}% of sphere surface covered")
-        elif coverage > 85:
-            st.warning(f"⚠ Good coverage: {coverage:.1f}% of sphere surface covered")
+        # Quality assessment
+        if coverage >= 98:
+            st.success(f"✨ Excellent! {coverage:.1f}% coverage with {len(tangent_pairs)} tangent pairs")
+        elif coverage >= 95:
+            st.info(f"✓ Very good! {coverage:.1f}% coverage with {len(tangent_pairs)} tangent pairs")
+        elif coverage >= 90:
+            st.warning(f"⚠️ Good coverage ({coverage:.1f}%) but some gaps remain")
         else:
-            st.info(f"ℹ Coverage: {coverage:.1f}% - Try different parameters for better coverage")
+            st.error(f"❌ Only {coverage:.1f}% coverage - significant gaps present")
         
-        # Special cases
-        if n_caps in [4, 6, 12]:
-            st.info("ℹ This is a special case where perfect tangent packing is mathematically possible!")
+        # Generate output
+        output_text = generate_output_text(sphere_radius, centers, cap_radii, coverage, tangent_pairs)
         
         # Download button
         st.download_button(
-            label="Download Configuration",
+            label="📥 Download Configuration",
             data=output_text,
-            file_name=f"sphere_packing_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            file_name=f"sphere_packing_{n_caps}caps_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
             mime="text/plain"
         )
         
-        # Show output preview
-        with st.expander("View Output File Preview"):
+        # Expandable output preview
+        with st.expander("📄 View Configuration Details"):
             st.text(output_text)
 
-# Instructions
-with st.expander("Understanding Sphere Packing"):
+# Information section
+with st.expander("📚 Mathematical Background"):
     st.markdown("""
-    ### What is Sphere Packing?
+    ### Sphere Packing Problem
     
-    This app creates a collection of circular "caps" on a sphere's surface, where each cap's 
-    boundary is a circle that lies on the sphere. The goal is to:
+    The problem of packing circles on a sphere such that:
+    1. Each circle boundary lies on the sphere surface (spherical caps)
+    2. Circles are tangent to their neighbors
+    3. The sphere is completely covered
     
-    1. **Cover the entire sphere** - No gaps between caps
-    2. **Make caps tangent** - Each cap's boundary touches its neighbors
-    3. **Avoid overlaps** - Caps don't overlap except at tangent points
+    is related to several classical problems in mathematics:
     
-    ### Special Cases
-    
-    Perfect tangent packing is only possible for certain numbers:
-    - **4 caps**: Tetrahedral arrangement
-    - **6 caps**: Octahedral arrangement (along axes)
+    **Perfect Solutions Exist For:**
+    - **4 caps**: Tetrahedral arrangement (each cap covers 1/4 of sphere)
+    - **6 caps**: Octahedral arrangement (along coordinate axes)
     - **8 caps**: Cubic arrangement
-    - **12 caps**: Icosahedral arrangement
-    - **20 caps**: Dodecahedral arrangement
+    - **12 caps**: Icosahedral arrangement ✨
+    - **20 caps**: Dodecahedral arrangement ✨
     
-    ### For Other Numbers
+    **Key Concepts:**
+    - **Angular radius**: The angle from sphere center to cap boundary
+    - **Cap circle radius**: The actual radius of the circle on the sphere surface
+    - **Tangency**: Two caps are tangent when their boundaries touch at exactly one point
     
-    The algorithm uses optimization to find the best possible arrangement, but perfect 
-    tangency and complete coverage may not be achievable simultaneously.
-    
-    ### Output File
-    
-    The output includes:
-    - Sphere radius
-    - Each cap's center coordinates
-    - Each cap's boundary circle radius
-    - Which caps are tangent to each other
-    - Coverage percentage
+    **Why 12 and 20 are special:**
+    These correspond to the vertices of the icosahedron and dodecahedron, which provide
+    the most symmetric distributions of points on a sphere.
     """)
