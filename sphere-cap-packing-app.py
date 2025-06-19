@@ -2,43 +2,104 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
-from scipy.optimize import fsolve
 import warnings
 warnings.filterwarnings('ignore')
 
-def solve_apollonius_numeric(c1, r1, c2, r2, c3, r3, s1=1, s2=1, s3=1, initial_guess=None):
+def solve_apollonius_iterative(c1, r1, c2, r2, c3, r3, s1=1, s2=1, s3=1, max_iter=1000, tol=1e-8):
     """
-    Solve the Problem of Apollonius numerically.
+    Solve the Problem of Apollonius using iterative method.
     Find circle with center (x,y) and radius r tangent to three given circles.
     s1, s2, s3 = +1 for external tangency, -1 for internal tangency
     """
     
-    def equations(vars):
-        x, y, r = vars
-        # Distance from (x,y) to each circle center should equal sum/difference of radii
-        eq1 = np.sqrt((x - c1[0])**2 + (y - c1[1])**2) - (r + s1 * r1)
-        eq2 = np.sqrt((x - c2[0])**2 + (y - c2[1])**2) - (r + s2 * r2)
-        eq3 = np.sqrt((x - c3[0])**2 + (y - c3[1])**2) - (r + s3 * r3)
-        return [eq1, eq2, eq3]
+    # Initial guess - weighted centroid
+    total_r = r1 + r2 + r3
+    x0 = (c1[0]*r1 + c2[0]*r2 + c3[0]*r3) / total_r
+    y0 = (c1[1]*r1 + c2[1]*r2 + c3[1]*r3) / total_r
+    r0 = total_r / 3
     
-    # Initial guess - centroid of the three circles
-    if initial_guess is None:
-        x0 = (c1[0] + c2[0] + c3[0]) / 3
-        y0 = (c1[1] + c2[1] + c3[1]) / 3
-        r0 = (r1 + r2 + r3) / 3
-        initial_guess = [x0, y0, r0]
+    x, y, r = x0, y0, r0
     
-    try:
-        solution = fsolve(equations, initial_guess)
-        x, y, r = solution
+    for iteration in range(max_iter):
+        # Calculate current distances
+        d1 = np.sqrt((x - c1[0])**2 + (y - c1[1])**2)
+        d2 = np.sqrt((x - c2[0])**2 + (y - c2[1])**2)
+        d3 = np.sqrt((x - c3[0])**2 + (y - c3[1])**2)
         
-        # Verify the solution
-        residual = equations(solution)
-        if np.max(np.abs(residual)) < 1e-6 and r > 0:
-            return np.array([x, y]), r
+        # Target distances
+        target_d1 = r + s1 * r1
+        target_d2 = r + s2 * r2
+        target_d3 = r + s3 * r3
+        
+        # Errors
+        e1 = d1 - target_d1
+        e2 = d2 - target_d2
+        e3 = d3 - target_d3
+        
+        # Check convergence
+        if abs(e1) < tol and abs(e2) < tol and abs(e3) < tol:
+            if r > 0:
+                return np.array([x, y]), r
+            else:
+                return None, None
+        
+        # Compute Jacobian elements
+        if d1 > 0:
+            dx1 = (x - c1[0]) / d1
+            dy1 = (y - c1[1]) / d1
         else:
+            dx1, dy1 = 0, 0
+            
+        if d2 > 0:
+            dx2 = (x - c2[0]) / d2
+            dy2 = (y - c2[1]) / d2
+        else:
+            dx2, dy2 = 0, 0
+            
+        if d3 > 0:
+            dx3 = (x - c3[0]) / d3
+            dy3 = (y - c3[1]) / d3
+        else:
+            dx3, dy3 = 0, 0
+        
+        # Build system matrix (Jacobian)
+        J = np.array([
+            [dx1, dy1, -1],
+            [dx2, dy2, -1],
+            [dx3, dy3, -1]
+        ])
+        
+        # Error vector
+        E = np.array([e1, e2, e3])
+        
+        # Solve for corrections using least squares
+        try:
+            delta = np.linalg.lstsq(J, -E, rcond=None)[0]
+            
+            # Apply corrections with damping
+            damping = 0.7
+            x += damping * delta[0]
+            y += damping * delta[1]
+            r += damping * delta[2]
+            
+            # Ensure radius stays positive
+            r = max(0.01, r)
+            
+        except:
             return None, None
-    except:
+    
+    # Check final solution quality
+    d1 = np.sqrt((x - c1[0])**2 + (y - c1[1])**2)
+    d2 = np.sqrt((x - c2[0])**2 + (y - c2[1])**2)
+    d3 = np.sqrt((x - c3[0])**2 + (y - c3[1])**2)
+    
+    e1 = abs(d1 - (r + s1 * r1))
+    e2 = abs(d2 - (r + s2 * r2))
+    e3 = abs(d3 - (r + s3 * r3))
+    
+    if max(e1, e2, e3) < 0.01:  # Relaxed tolerance for final check
+        return np.array([x, y]), r
+    else:
         return None, None
 
 def find_all_apollonius_circles(c1, r1, c2, r2, c3, r3):
@@ -52,26 +113,33 @@ def find_all_apollonius_circles(c1, r1, c2, r2, c3, r3):
     for s1 in [1, -1]:
         for s2 in [1, -1]:
             for s3 in [1, -1]:
-                # Skip cases where we try to be internal to a circle smaller than the solution
-                center, radius = solve_apollonius_numeric(c1, r1, c2, r2, c3, r3, s1, s2, s3)
+                center, radius = solve_apollonius_iterative(c1, r1, c2, r2, c3, r3, s1, s2, s3)
                 
-                if center is not None and radius is not None:
+                if center is not None and radius is not None and radius > 0:
                     # Check if this is internal tangency to a smaller circle (invalid)
                     valid = True
-                    if s1 == -1 and radius > r1:
+                    if s1 == -1 and radius < r1:
                         valid = False
-                    if s2 == -1 and radius > r2:
+                    if s2 == -1 and radius < r2:
                         valid = False
-                    if s3 == -1 and radius > r3:
+                    if s3 == -1 and radius < r3:
                         valid = False
                     
                     if valid:
-                        solutions.append({
-                            'center': center,
-                            'radius': radius,
-                            'tangency': (s1, s2, s3),
-                            'type': f"{'E' if s1==1 else 'I'}{'E' if s2==1 else 'I'}{'E' if s3==1 else 'I'}"
-                        })
+                        # Check if solution is duplicate
+                        is_duplicate = False
+                        for sol in solutions:
+                            if np.linalg.norm(sol['center'] - center) < 0.1 and abs(sol['radius'] - radius) < 0.1:
+                                is_duplicate = True
+                                break
+                        
+                        if not is_duplicate:
+                            solutions.append({
+                                'center': center,
+                                'radius': radius,
+                                'tangency': (s1, s2, s3),
+                                'type': f"{'E' if s1==1 else 'I'}{'E' if s2==1 else 'I'}{'E' if s3==1 else 'I'}"
+                            })
     
     return solutions
 
@@ -102,17 +170,20 @@ def plot_apollonius(c1, r1, c2, r2, c3, r3, solutions, selected_solution=None):
     ax.text(c3[0], c3[1], '  3', fontsize=12, ha='left', va='center')
     
     # Plot all solutions
-    colors = plt.cm.rainbow(np.linspace(0, 1, len(solutions)))
+    colors = plt.cm.rainbow(np.linspace(0, 1, max(len(solutions), 1)))
     
     for i, (sol, color) in enumerate(zip(solutions, colors)):
         if selected_solution is None or i == selected_solution:
             alpha = 0.8 if selected_solution is None else 1.0
             linewidth = 2 if selected_solution is None else 3
             
+            # Check for internal tangencies
+            has_internal = any(t == -1 for t in sol['tangency'])
+            
             solution_circle = Circle(sol['center'], sol['radius'], 
                                    fill=False, edgecolor=color, 
                                    linewidth=linewidth, alpha=alpha,
-                                   linestyle='-' if 'E' in sol['type'] else '--')
+                                   linestyle='--' if has_internal else '-')
             ax.add_patch(solution_circle)
             
             # Add center point
@@ -126,12 +197,13 @@ def plot_apollonius(c1, r1, c2, r2, c3, r3, solutions, selected_solution=None):
     all_centers = [c1, c2, c3] + [sol['center'] for sol in solutions]
     all_radii = [r1, r2, r3] + [sol['radius'] for sol in solutions]
     
-    x_coords = [c[0] for c in all_centers]
-    y_coords = [c[1] for c in all_centers]
-    
-    margin = max(all_radii) * 1.5
-    ax.set_xlim(min(x_coords) - margin, max(x_coords) + margin)
-    ax.set_ylim(min(y_coords) - margin, max(y_coords) + margin)
+    if all_centers:
+        x_coords = [c[0] for c in all_centers]
+        y_coords = [c[1] for c in all_centers]
+        
+        margin = max(all_radii) * 1.5 if all_radii else 5
+        ax.set_xlim(min(x_coords) - margin, max(x_coords) + margin)
+        ax.set_ylim(min(y_coords) - margin, max(y_coords) + margin)
     
     ax.grid(True, alpha=0.3)
     ax.set_xlabel('X', fontsize=12)
@@ -202,6 +274,12 @@ if st.sidebar.button("Load Example 2: Nested"):
     st.session_state.x3, st.session_state.y3, st.session_state.r3 = -1.0, 1.0, 0.8
     st.rerun()
 
+if st.sidebar.button("Load Example 3: Symmetric"):
+    st.session_state.x1, st.session_state.y1, st.session_state.r1 = -2.0, -1.0, 1.5
+    st.session_state.x2, st.session_state.y2, st.session_state.r2 = 2.0, -1.0, 1.5
+    st.session_state.x3, st.session_state.y3, st.session_state.r3 = 0.0, 2.0, 1.5
+    st.rerun()
+
 # Solve button
 if st.sidebar.button("🔍 Find Tangent Circles", type="primary"):
     # Define circles
@@ -263,9 +341,13 @@ if st.sidebar.button("🔍 Find Tangent Circles", type="primary"):
                 expected2 = sol['radius'] + sol['tangency'][1] * r2
                 expected3 = sol['radius'] + sol['tangency'][2] * r3
                 
-                st.write(f"• Distance to circle 1: {d1:.3f} (expected: {expected1:.3f})")
-                st.write(f"• Distance to circle 2: {d2:.3f} (expected: {expected2:.3f})")
-                st.write(f"• Distance to circle 3: {d3:.3f} (expected: {expected3:.3f})")
+                error1 = abs(d1 - abs(expected1))
+                error2 = abs(d2 - abs(expected2))
+                error3 = abs(d3 - abs(expected3))
+                
+                st.write(f"• Distance to circle 1: {d1:.3f} (expected: {abs(expected1):.3f}, error: {error1:.6f})")
+                st.write(f"• Distance to circle 2: {d2:.3f} (expected: {abs(expected2):.3f}, error: {error2:.6f})")
+                st.write(f"• Distance to circle 3: {d3:.3f} (expected: {abs(expected3):.3f}, error: {error3:.6f})")
     else:
         st.error("No solutions found. The circles might be in a configuration with no tangent circle.")
 
@@ -298,7 +380,7 @@ with st.expander("📚 Mathematical Background"):
     - √[(x-x₂)² + (y-y₂)²] = r ± r₂
     - √[(x-x₃)² + (y-y₃)²] = r ± r₃
     
-    We solve this system numerically for each combination of ± signs.
+    We solve this system iteratively using a Newton-Raphson-like method.
     
     ### Special Cases
     
