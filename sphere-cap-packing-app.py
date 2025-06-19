@@ -1,472 +1,308 @@
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-import io
-from datetime import datetime
+from matplotlib.patches import Circle
+from scipy.optimize import fsolve
+import warnings
+warnings.filterwarnings('ignore')
 
-def angular_distance(p1, p2):
-    """Calculate angular distance between two points on a sphere"""
-    # Normalize vectors
-    p1_norm = p1 / np.linalg.norm(p1)
-    p2_norm = p2 / np.linalg.norm(p2)
+def solve_apollonius_numeric(c1, r1, c2, r2, c3, r3, s1=1, s2=1, s3=1, initial_guess=None):
+    """
+    Solve the Problem of Apollonius numerically.
+    Find circle with center (x,y) and radius r tangent to three given circles.
+    s1, s2, s3 = +1 for external tangency, -1 for internal tangency
+    """
     
-    # Calculate angle
-    dot_product = np.clip(np.dot(p1_norm, p2_norm), -1, 1)
-    return np.arccos(dot_product)
-
-def calculate_cap_radius_from_angular(sphere_radius, angular_radius):
-    """Calculate the actual circle radius of a spherical cap given its angular radius"""
-    return sphere_radius * np.sin(angular_radius)
-
-def calculate_angular_from_cap_radius(sphere_radius, cap_radius):
-    """Calculate angular radius from cap circle radius"""
-    return np.arcsin(min(cap_radius / sphere_radius, 1.0))
-
-def generate_icosahedral_vertices():
-    """Generate normalized icosahedron vertices"""
-    phi = (1 + np.sqrt(5)) / 2  # golden ratio
+    def equations(vars):
+        x, y, r = vars
+        # Distance from (x,y) to each circle center should equal sum/difference of radii
+        eq1 = np.sqrt((x - c1[0])**2 + (y - c1[1])**2) - (r + s1 * r1)
+        eq2 = np.sqrt((x - c2[0])**2 + (y - c2[1])**2) - (r + s2 * r2)
+        eq3 = np.sqrt((x - c3[0])**2 + (y - c3[1])**2) - (r + s3 * r3)
+        return [eq1, eq2, eq3]
     
-    # Icosahedron vertices
-    vertices = []
+    # Initial guess - centroid of the three circles
+    if initial_guess is None:
+        x0 = (c1[0] + c2[0] + c3[0]) / 3
+        y0 = (c1[1] + c2[1] + c3[1]) / 3
+        r0 = (r1 + r2 + r3) / 3
+        initial_guess = [x0, y0, r0]
     
-    # (0, ±1, ±φ)
-    for i in [-1, 1]:
-        for j in [-1, 1]:
-            vertices.append([0, i, j * phi])
-    
-    # (±1, ±φ, 0)
-    for i in [-1, 1]:
-        for j in [-1, 1]:
-            vertices.append([i, j * phi, 0])
-    
-    # (±φ, 0, ±1)
-    for i in [-1, 1]:
-        for j in [-1, 1]:
-            vertices.append([i * phi, 0, j])
-    
-    vertices = np.array(vertices)
-    # Normalize to unit sphere
-    vertices = vertices / np.linalg.norm(vertices, axis=1, keepdims=True)
-    
-    return vertices
-
-def generate_dodecahedral_vertices():
-    """Generate normalized dodecahedron vertices"""
-    phi = (1 + np.sqrt(5)) / 2  # golden ratio
-    
-    vertices = []
-    
-    # (±1, ±1, ±1)
-    for x in [-1, 1]:
-        for y in [-1, 1]:
-            for z in [-1, 1]:
-                vertices.append([x, y, z])
-    
-    # (0, ±1/φ, ±φ)
-    for i in [-1, 1]:
-        for j in [-1, 1]:
-            vertices.append([0, i/phi, j*phi])
-    
-    # (±1/φ, ±φ, 0)
-    for i in [-1, 1]:
-        for j in [-1, 1]:
-            vertices.append([i/phi, j*phi, 0])
-    
-    # (±φ, 0, ±1/φ)
-    for i in [-1, 1]:
-        for j in [-1, 1]:
-            vertices.append([i*phi, 0, j/phi])
-    
-    vertices = np.array(vertices)
-    # Normalize to unit sphere
-    vertices = vertices / np.linalg.norm(vertices, axis=1, keepdims=True)
-    
-    return vertices
-
-def calculate_tangent_radius_for_vertices(vertices):
-    """Calculate the radius for caps centered at vertices to be tangent"""
-    # Find minimum distance between any two vertices
-    min_dist = float('inf')
-    for i in range(len(vertices)):
-        for j in range(i + 1, len(vertices)):
-            dist = angular_distance(vertices[i], vertices[j])
-            if dist < min_dist:
-                min_dist = dist
-    
-    # For tangent circles, each has angular radius = half the minimum distance
-    angular_radius = min_dist / 2
-    
-    return angular_radius
-
-def generate_uniform_points(n_points):
-    """Generate uniformly distributed points on unit sphere using Fibonacci spiral"""
-    points = []
-    phi = np.pi * (3 - np.sqrt(5))  # golden angle
-    
-    for i in range(n_points):
-        y = 1 - (i / float(n_points - 1)) * 2  # y goes from 1 to -1
-        radius = np.sqrt(1 - y * y)
+    try:
+        solution = fsolve(equations, initial_guess)
+        x, y, r = solution
         
-        theta = phi * i  # golden angle increment
-        
-        x = np.cos(theta) * radius
-        z = np.sin(theta) * radius
-        
-        points.append([x, y, z])
-    
-    return np.array(points)
-
-def optimize_radii_for_coverage(centers, sphere_radius, max_iterations=100):
-    """Optimize radii to maximize coverage while maintaining tangency where possible"""
-    n_caps = len(centers)
-    
-    # Start with uniform radii based on surface area division
-    total_area = 4 * np.pi * sphere_radius**2
-    area_per_cap = total_area / n_caps
-    
-    # Initial angular radius from equal area division
-    # Area of spherical cap = 2πR²(1-cos(θ))
-    # area_per_cap = 2πR²(1-cos(θ))
-    # 1-cos(θ) = area_per_cap / (2πR²)
-    cos_theta = 1 - area_per_cap / (2 * np.pi * sphere_radius**2)
-    initial_angular = np.arccos(cos_theta)
-    
-    # But limit to avoid too much overlap
-    # Find nearest neighbor distance for each point
-    min_neighbor_dists = []
-    for i in range(n_caps):
-        dists = []
-        for j in range(n_caps):
-            if i != j:
-                dists.append(angular_distance(centers[i], centers[j]))
-        min_neighbor_dists.append(min(dists))
-    
-    # Set radius to the smaller of: equal-area radius or half the minimum neighbor distance
-    angular_radii = []
-    for i in range(n_caps):
-        max_angular = min_neighbor_dists[i] / 2
-        angular_radii.append(min(initial_angular, max_angular * 0.98))  # 0.98 to ensure slight gap
-    
-    angular_radii = np.array(angular_radii)
-    cap_radii = calculate_cap_radius_from_angular(sphere_radius, angular_radii)
-    
-    return cap_radii
-
-def check_overlap(center1, center2, radius1, radius2, sphere_radius):
-    """Check if two caps overlap"""
-    ang_dist = angular_distance(center1, center2)
-    ang_rad1 = calculate_angular_from_cap_radius(sphere_radius, radius1)
-    ang_rad2 = calculate_angular_from_cap_radius(sphere_radius, radius2)
-    return ang_dist < (ang_rad1 + ang_rad2 - 0.001)  # Small tolerance
-
-def check_tangency(center1, center2, radius1, radius2, sphere_radius, tolerance=0.05):
-    """Check if two caps are tangent within tolerance"""
-    ang_dist = angular_distance(center1, center2)
-    ang_rad1 = calculate_angular_from_cap_radius(sphere_radius, radius1)
-    ang_rad2 = calculate_angular_from_cap_radius(sphere_radius, radius2)
-    expected = ang_rad1 + ang_rad2
-    return abs(ang_dist - expected) < tolerance
-
-def check_coverage_monte_carlo(centers, radii, sphere_radius, n_samples=5000):
-    """Check sphere coverage using Monte Carlo sampling"""
-    covered = 0
-    
-    for _ in range(n_samples):
-        # Generate random point on sphere
-        theta = np.arccos(1 - 2 * np.random.random())
-        phi = 2 * np.pi * np.random.random()
-        
-        x = sphere_radius * np.sin(theta) * np.cos(phi)
-        y = sphere_radius * np.sin(theta) * np.sin(phi)
-        z = sphere_radius * np.cos(theta)
-        point = np.array([x, y, z])
-        
-        # Check if covered by any cap
-        for center, radius in zip(centers, radii):
-            ang_dist = angular_distance(point, center)
-            ang_radius = calculate_angular_from_cap_radius(sphere_radius, radius)
-            
-            if ang_dist <= ang_radius:
-                covered += 1
-                break
-    
-    return (covered / n_samples) * 100
-
-def plot_sphere_with_caps(sphere_radius, centers, cap_radii, title=""):
-    """Visualize the sphere with spherical caps"""
-    fig = plt.figure(figsize=(14, 12))
-    ax = fig.add_subplot(111, projection='3d')
-    
-    # Plot sphere wireframe
-    u = np.linspace(0, 2 * np.pi, 30)
-    v = np.linspace(0, np.pi, 20)
-    x_sphere = sphere_radius * np.outer(np.cos(u), np.sin(v))
-    y_sphere = sphere_radius * np.outer(np.sin(u), np.sin(v))
-    z_sphere = sphere_radius * np.outer(np.ones(np.size(u)), np.cos(v))
-    ax.plot_wireframe(x_sphere, y_sphere, z_sphere, alpha=0.2, color='lightgray', linewidth=0.5)
-    
-    # Color map
-    colors = plt.cm.rainbow(np.linspace(0, 1, len(centers)))
-    
-    # Track statistics
-    overlaps = []
-    tangencies = []
-    
-    # Plot caps
-    for i, (center, cap_radius, color) in enumerate(zip(centers, cap_radii, colors)):
-        # Ensure center is on sphere surface
-        center_norm = center / np.linalg.norm(center) * sphere_radius
-        
-        # Calculate cap boundary circle
-        normal = center_norm / sphere_radius
-        
-        # Find orthogonal vectors
-        if abs(normal[2]) < 0.9:
-            v1 = np.cross(normal, [0, 0, 1])
+        # Verify the solution
+        residual = equations(solution)
+        if np.max(np.abs(residual)) < 1e-6 and r > 0:
+            return np.array([x, y]), r
         else:
-            v1 = np.cross(normal, [1, 0, 0])
-        v1 = v1 / np.linalg.norm(v1)
-        v2 = np.cross(normal, v1)
-        
-        # Generate circle points
-        theta = np.linspace(0, 2 * np.pi, 100)
-        circle_points = []
-        
-        for t in theta:
-            point_in_plane = cap_radius * (np.cos(t) * v1 + np.sin(t) * v2)
-            point_direction = center_norm + point_in_plane
-            point_direction = point_direction / np.linalg.norm(point_direction)
-            point_on_sphere = sphere_radius * point_direction
-            circle_points.append(point_on_sphere)
-        
-        circle_points = np.array(circle_points)
-        ax.plot(circle_points[:, 0], circle_points[:, 1], circle_points[:, 2], 
-                color=color, linewidth=2.5, alpha=0.9)
-        
-        # Mark center
-        ax.scatter(*center_norm, color='black', s=40, marker='o')
-        ax.text(center_norm[0]*1.1, center_norm[1]*1.1, center_norm[2]*1.1, 
-                f'{i+1}', fontsize=10, ha='center', va='center')
-        
-        # Check relationships with other caps
-        for j in range(i + 1, len(centers)):
-            if check_overlap(centers[i], centers[j], cap_radii[i], cap_radii[j], sphere_radius):
-                overlaps.append((i, j))
-            elif check_tangency(centers[i], centers[j], cap_radii[i], cap_radii[j], sphere_radius):
-                tangencies.append((i, j))
+            return None, None
+    except:
+        return None, None
+
+def find_all_apollonius_circles(c1, r1, c2, r2, c3, r3):
+    """
+    Find all possible Apollonius circles (up to 8 solutions).
+    Each solution corresponds to a different combination of internal/external tangencies.
+    """
+    solutions = []
     
-    # Draw tangent connections
-    for i, j in tangencies:
-        c1 = centers[i] / np.linalg.norm(centers[i]) * sphere_radius
-        c2 = centers[j] / np.linalg.norm(centers[j]) * sphere_radius
-        ax.plot([c1[0], c2[0]], [c1[1], c2[1]], [c1[2], c2[2]], 
-                'g--', alpha=0.4, linewidth=1)
+    # Try all 8 combinations of internal (-1) and external (+1) tangencies
+    for s1 in [1, -1]:
+        for s2 in [1, -1]:
+            for s3 in [1, -1]:
+                # Skip cases where we try to be internal to a circle smaller than the solution
+                center, radius = solve_apollonius_numeric(c1, r1, c2, r2, c3, r3, s1, s2, s3)
+                
+                if center is not None and radius is not None:
+                    # Check if this is internal tangency to a smaller circle (invalid)
+                    valid = True
+                    if s1 == -1 and radius > r1:
+                        valid = False
+                    if s2 == -1 and radius > r2:
+                        valid = False
+                    if s3 == -1 and radius > r3:
+                        valid = False
+                    
+                    if valid:
+                        solutions.append({
+                            'center': center,
+                            'radius': radius,
+                            'tangency': (s1, s2, s3),
+                            'type': f"{'E' if s1==1 else 'I'}{'E' if s2==1 else 'I'}{'E' if s3==1 else 'I'}"
+                        })
     
-    # Highlight overlaps (shouldn't happen in good packing)
-    for i, j in overlaps:
-        c1 = centers[i] / np.linalg.norm(centers[i]) * sphere_radius
-        c2 = centers[j] / np.linalg.norm(centers[j]) * sphere_radius
-        ax.plot([c1[0], c2[0]], [c1[1], c2[1]], [c1[2], c2[2]], 
-                'r-', alpha=0.6, linewidth=2)
+    return solutions
+
+def plot_apollonius(c1, r1, c2, r2, c3, r3, solutions, selected_solution=None):
+    """Plot the three given circles and the Apollonius circle solutions."""
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
     
+    # Set equal aspect ratio
+    ax.set_aspect('equal')
+    
+    # Plot the three given circles
+    circle1 = Circle(c1, r1, fill=False, edgecolor='blue', linewidth=2, label='Circle 1')
+    circle2 = Circle(c2, r2, fill=False, edgecolor='green', linewidth=2, label='Circle 2')
+    circle3 = Circle(c3, r3, fill=False, edgecolor='red', linewidth=2, label='Circle 3')
+    
+    ax.add_patch(circle1)
+    ax.add_patch(circle2)
+    ax.add_patch(circle3)
+    
+    # Plot centers
+    ax.plot(*c1, 'bo', markersize=8)
+    ax.plot(*c2, 'go', markersize=8)
+    ax.plot(*c3, 'ro', markersize=8)
+    
+    # Add labels
+    ax.text(c1[0], c1[1], '  1', fontsize=12, ha='left', va='center')
+    ax.text(c2[0], c2[1], '  2', fontsize=12, ha='left', va='center')
+    ax.text(c3[0], c3[1], '  3', fontsize=12, ha='left', va='center')
+    
+    # Plot all solutions
+    colors = plt.cm.rainbow(np.linspace(0, 1, len(solutions)))
+    
+    for i, (sol, color) in enumerate(zip(solutions, colors)):
+        if selected_solution is None or i == selected_solution:
+            alpha = 0.8 if selected_solution is None else 1.0
+            linewidth = 2 if selected_solution is None else 3
+            
+            solution_circle = Circle(sol['center'], sol['radius'], 
+                                   fill=False, edgecolor=color, 
+                                   linewidth=linewidth, alpha=alpha,
+                                   linestyle='-' if 'E' in sol['type'] else '--')
+            ax.add_patch(solution_circle)
+            
+            # Add center point
+            ax.plot(*sol['center'], 'o', color=color, markersize=6)
+            
+            # Add label
+            ax.text(sol['center'][0], sol['center'][1], 
+                   f"\n  {sol['type']}", fontsize=10, ha='center', va='top')
+    
+    # Set axis limits
+    all_centers = [c1, c2, c3] + [sol['center'] for sol in solutions]
+    all_radii = [r1, r2, r3] + [sol['radius'] for sol in solutions]
+    
+    x_coords = [c[0] for c in all_centers]
+    y_coords = [c[1] for c in all_centers]
+    
+    margin = max(all_radii) * 1.5
+    ax.set_xlim(min(x_coords) - margin, max(x_coords) + margin)
+    ax.set_ylim(min(y_coords) - margin, max(y_coords) + margin)
+    
+    ax.grid(True, alpha=0.3)
     ax.set_xlabel('X', fontsize=12)
     ax.set_ylabel('Y', fontsize=12)
-    ax.set_zlabel('Z', fontsize=12)
+    ax.set_title('Apollonius Circles: Finding Circles Tangent to Three Given Circles', fontsize=14)
     
-    if title:
-        ax.set_title(title, fontsize=14)
-    else:
-        ax.set_title(f'Sphere Packing: {len(centers)} Caps, {len(tangencies)} Tangent, {len(overlaps)} Overlaps', 
-                    fontsize=14)
+    # Add legend explaining tangency types
+    ax.text(0.02, 0.98, 'E = External tangency\nI = Internal tangency\nSolid = All external\nDashed = Some internal', 
+            transform=ax.transAxes, fontsize=10, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
     
-    # Equal aspect
-    ax.set_box_aspect([1,1,1])
-    max_range = sphere_radius * 1.2
-    ax.set_xlim([-max_range, max_range])
-    ax.set_ylim([-max_range, max_range])
-    ax.set_zlim([-max_range, max_range])
-    
-    ax.view_init(elev=25, azim=45)
-    
-    return fig, overlaps, tangencies
-
-def generate_output_text(sphere_radius, centers, cap_radii, coverage, overlaps, tangencies):
-    """Generate output text file"""
-    output = f"Sphere Cap Packing Configuration\n"
-    output += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    output += f"{'='*70}\n\n"
-    output += f"Sphere radius: {sphere_radius:.6f}\n"
-    output += f"Number of caps: {len(centers)}\n"
-    output += f"Surface coverage: {coverage:.1f}%\n"
-    output += f"Tangent pairs: {len(tangencies)}\n"
-    output += f"Overlapping pairs: {len(overlaps)}\n\n"
-    
-    output += f"Spherical Caps:\n"
-    output += f"{'-'*70}\n"
-    
-    for i, (center, cap_radius) in enumerate(zip(centers, cap_radii)):
-        center_norm = center / np.linalg.norm(center) * sphere_radius
-        
-        output += f"\nCap {i+1}:\n"
-        output += f"  Center: ({center_norm[0]:.6f}, {center_norm[1]:.6f}, {center_norm[2]:.6f})\n"
-        output += f"  Circle radius: {cap_radius:.6f}\n"
-        
-        angular_radius = calculate_angular_from_cap_radius(sphere_radius, cap_radius)
-        output += f"  Angular radius: {np.degrees(angular_radius):.2f}°\n"
-        
-        # Find tangent neighbors
-        tangent_neighbors = []
-        for pair in tangencies:
-            if i in pair:
-                tangent_neighbors.append(pair[0] + 1 if pair[1] == i else pair[1] + 1)
-        
-        if tangent_neighbors:
-            output += f"  Tangent to: {sorted(tangent_neighbors)}\n"
-    
-    return output
+    plt.tight_layout()
+    return fig
 
 # Streamlit App
-st.title("🌐 Sphere Cap Packing - Tangent Circles")
+st.title("🔵 Apollonius Circle Solver")
+st.markdown("### Find all circles tangent to three given circles")
 
 st.markdown("""
-This app creates packings of spherical caps where:
-- Each cap's boundary is a circle on the sphere
-- Caps are tangent to neighbors (no overlap)
-- Maximum coverage of the sphere surface
+The **Problem of Apollonius** asks: Given three circles, find all circles that are tangent to all three.
+
+There can be up to **8 different solutions**, depending on whether the tangency is:
+- **External (E)**: The solution circle touches the given circle from outside
+- **Internal (I)**: The solution circle contains the given circle and touches from inside
 """)
 
-# Sidebar
-st.sidebar.header("⚙️ Configuration")
+# Sidebar for circle inputs
+st.sidebar.header("Define Three Circles")
 
-sphere_radius = st.sidebar.number_input(
-    "Sphere Radius", 
-    min_value=1.0, 
-    max_value=100.0, 
-    value=10.0, 
-    step=0.1
-)
+col1, col2 = st.sidebar.columns(2)
 
-packing_type = st.sidebar.selectbox(
-    "Packing Type",
-    ["12 Caps (Icosahedral)", "20 Caps (Dodecahedral)", "Custom Number"],
-    help="Icosahedral and Dodecahedral give optimal tangent packings"
-)
+# Circle 1
+st.sidebar.markdown("**Circle 1** 🔵")
+with col1:
+    x1 = st.number_input("Center X₁", value=0.0, step=0.5, key="x1")
+    r1 = st.number_input("Radius r₁", value=3.0, min_value=0.1, step=0.5, key="r1")
+with col2:
+    y1 = st.number_input("Center Y₁", value=0.0, step=0.5, key="y1")
 
-if packing_type == "Custom Number":
-    n_caps = st.sidebar.slider("Number of Caps", min_value=4, max_value=100, value=30)
-    
-    st.sidebar.info("""
-    **Note:** For custom numbers, the algorithm places caps uniformly 
-    and sizes them to avoid overlap while maximizing coverage.
-    Perfect tangent packing may not be possible.
-    """)
+# Circle 2
+st.sidebar.markdown("**Circle 2** 🟢")
+with col1:
+    x2 = st.number_input("Center X₂", value=5.0, step=0.5, key="x2")
+    r2 = st.number_input("Radius r₂", value=2.0, min_value=0.1, step=0.5, key="r2")
+with col2:
+    y2 = st.number_input("Center Y₂", value=0.0, step=0.5, key="y2")
+
+# Circle 3
+st.sidebar.markdown("**Circle 3** 🔴")
+with col1:
+    x3 = st.number_input("Center X₃", value=2.5, step=0.5, key="x3")
+    r3 = st.number_input("Radius r₃", value=2.5, min_value=0.1, step=0.5, key="r3")
+with col2:
+    y3 = st.number_input("Center Y₃", value=4.0, step=0.5, key="y3")
 
 st.sidebar.markdown("---")
 
-# Generate button
-if st.sidebar.button("🚀 Generate Packing", type="primary"):
-    with st.spinner("Calculating optimal packing..."):
+# Preset examples
+if st.sidebar.button("Load Example 1: Classic"):
+    st.session_state.x1, st.session_state.y1, st.session_state.r1 = -3.0, 0.0, 2.0
+    st.session_state.x2, st.session_state.y2, st.session_state.r2 = 3.0, 0.0, 2.0
+    st.session_state.x3, st.session_state.y3, st.session_state.r3 = 0.0, 3.0, 1.5
+    st.rerun()
+
+if st.sidebar.button("Load Example 2: Nested"):
+    st.session_state.x1, st.session_state.y1, st.session_state.r1 = 0.0, 0.0, 5.0
+    st.session_state.x2, st.session_state.y2, st.session_state.r2 = 2.0, 0.0, 1.0
+    st.session_state.x3, st.session_state.y3, st.session_state.r3 = -1.0, 1.0, 0.8
+    st.rerun()
+
+# Solve button
+if st.sidebar.button("🔍 Find Tangent Circles", type="primary"):
+    # Define circles
+    c1 = np.array([x1, y1])
+    c2 = np.array([x2, y2])
+    c3 = np.array([x3, y3])
+    
+    # Find all solutions
+    with st.spinner("Solving Apollonius problem..."):
+        solutions = find_all_apollonius_circles(c1, r1, c2, r2, c3, r3)
+    
+    if solutions:
+        st.success(f"Found {len(solutions)} solution(s)!")
         
-        # Generate centers based on type
-        if "12" in packing_type:
-            centers = generate_icosahedral_vertices()
-            # Calculate radius for tangent packing
-            angular_radius = calculate_tangent_radius_for_vertices(centers)
-            centers = centers * sphere_radius
-            cap_radii = np.full(12, calculate_cap_radius_from_angular(sphere_radius, angular_radius))
-            
-        elif "20" in packing_type:
-            centers = generate_dodecahedral_vertices()
-            # Calculate radius for tangent packing
-            angular_radius = calculate_tangent_radius_for_vertices(centers)
-            centers = centers * sphere_radius
-            cap_radii = np.full(20, calculate_cap_radius_from_angular(sphere_radius, angular_radius))
-            
-        else:
-            # Custom number - uniform distribution
-            centers = generate_uniform_points(n_caps)
-            centers = centers * sphere_radius
-            # Optimize radii to maximize coverage without overlap
-            cap_radii = optimize_radii_for_coverage(centers, sphere_radius)
-        
-        # Check coverage
-        coverage = check_coverage_monte_carlo(centers, cap_radii, sphere_radius)
-        
-        # Create visualization
-        fig, overlaps, tangencies = plot_sphere_with_caps(sphere_radius, centers, cap_radii)
+        # Create plot
+        fig = plot_apollonius(c1, r1, c2, r2, c3, r3, solutions)
         st.pyplot(fig)
         
-        # Metrics
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Number of Caps", len(centers))
-        with col2:
-            st.metric("Coverage", f"{coverage:.1f}%")
-        with col3:
-            st.metric("Tangent Pairs", len(tangencies))
-        with col4:
-            st.metric("Overlaps", len(overlaps), 
-                     help="Should be 0 for good packing")
+        # Display solution details
+        st.subheader("Solution Details")
         
-        # Quality assessment
-        if len(overlaps) > 0:
-            st.error(f"⚠️ {len(overlaps)} overlapping pairs detected! This shouldn't happen.")
-        elif coverage >= 98:
-            st.success(f"✨ Excellent packing! {coverage:.1f}% coverage with {len(tangencies)} tangent pairs")
-        elif coverage >= 90:
-            st.info(f"✓ Good packing: {coverage:.1f}% coverage with {len(tangencies)} tangent pairs")
-        else:
-            st.warning(f"Coverage: {coverage:.1f}% - Some gaps remain in the packing")
-        
-        # Special case info
-        if packing_type in ["12 Caps (Icosahedral)", "20 Caps (Dodecahedral)"]:
-            st.info("ℹ️ This configuration provides mathematically optimal tangent packing!")
-        
-        # Generate output
-        output_text = generate_output_text(sphere_radius, centers, cap_radii, coverage, overlaps, tangencies)
-        
-        # Download button
-        st.download_button(
-            label="📥 Download Configuration",
-            data=output_text,
-            file_name=f"sphere_packing_{len(centers)}caps_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-            mime="text/plain"
-        )
-        
-        with st.expander("📋 View Details"):
-            st.text(output_text)
+        for i, sol in enumerate(solutions):
+            with st.expander(f"Solution {i+1}: {sol['type']} (click to expand)"):
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Center X", f"{sol['center'][0]:.3f}")
+                    st.metric("Center Y", f"{sol['center'][1]:.3f}")
+                
+                with col2:
+                    st.metric("Radius", f"{sol['radius']:.3f}")
+                    
+                with col3:
+                    tangency_types = []
+                    if sol['tangency'][0] == 1:
+                        tangency_types.append("External to 1")
+                    else:
+                        tangency_types.append("Internal to 1")
+                    if sol['tangency'][1] == 1:
+                        tangency_types.append("External to 2")
+                    else:
+                        tangency_types.append("Internal to 2")
+                    if sol['tangency'][2] == 1:
+                        tangency_types.append("External to 3")
+                    else:
+                        tangency_types.append("Internal to 3")
+                    
+                    st.write("**Tangency Types:**")
+                    for t in tangency_types:
+                        st.write(f"• {t}")
+                
+                # Verification
+                st.write("**Distance Verification:**")
+                d1 = np.linalg.norm(sol['center'] - c1)
+                d2 = np.linalg.norm(sol['center'] - c2)
+                d3 = np.linalg.norm(sol['center'] - c3)
+                
+                expected1 = sol['radius'] + sol['tangency'][0] * r1
+                expected2 = sol['radius'] + sol['tangency'][1] * r2
+                expected3 = sol['radius'] + sol['tangency'][2] * r3
+                
+                st.write(f"• Distance to circle 1: {d1:.3f} (expected: {expected1:.3f})")
+                st.write(f"• Distance to circle 2: {d2:.3f} (expected: {expected2:.3f})")
+                st.write(f"• Distance to circle 3: {d3:.3f} (expected: {expected3:.3f})")
+    else:
+        st.error("No solutions found. The circles might be in a configuration with no tangent circle.")
 
 # Theory section
 with st.expander("📚 Mathematical Background"):
     st.markdown("""
-    ### The Challenge
+    ### The Problem of Apollonius
     
-    Packing circles on a sphere such that:
-    1. They don't overlap (except at tangent points)
-    2. They cover the entire surface
-    3. Each circle is tangent to its neighbors
+    Given three circles in the plane, find all circles that are tangent to all three. 
+    This problem was posed by Apollonius of Perga around 200 BC.
     
-    is only perfectly solvable for certain special numbers.
+    ### Solution Types
     
-    ### Perfect Solutions
+    Each solution is characterized by three letters (E or I):
+    - **EEE**: External to all three circles
+    - **EEI**: External to circles 1 and 2, internal to circle 3
+    - **EII**: External to circle 1, internal to circles 2 and 3
+    - **III**: Internal to all three circles (only possible if one circle contains the other two)
     
-    **12 Caps (Icosahedral):**
-    - Based on icosahedron vertices
-    - Each cap has 5 neighbors
-    - Angular radius ≈ 31.72°
+    ### Mathematical Approach
     
-    **20 Caps (Dodecahedral):**
-    - Based on dodecahedron vertices  
-    - Each cap has 3 neighbors
-    - Angular radius ≈ 23.65°
+    For a solution circle with center (x, y) and radius r:
     
-    ### For Other Numbers
+    The distance from its center to circle i's center must equal:
+    - r + rᵢ (for external tangency)
+    - |r - rᵢ| (for internal tangency)
     
-    The algorithm:
-    1. Distributes points uniformly using Fibonacci spiral
-    2. Calculates maximum radius without overlap
-    3. Aims for maximum coverage
+    This gives us three equations:
+    - √[(x-x₁)² + (y-y₁)²] = r ± r₁
+    - √[(x-x₂)² + (y-y₂)²] = r ± r₂
+    - √[(x-x₃)² + (y-y₃)²] = r ± r₃
     
-    Perfect tangent packing is generally impossible for arbitrary numbers.
+    We solve this system numerically for each combination of ± signs.
+    
+    ### Special Cases
+    
+    - If the three circles are mutually tangent, one solution is the circle through their points of tangency
+    - If one circle contains the other two, some internal tangency solutions may not exist
+    - Degenerate cases can produce lines (circles with infinite radius) as solutions
     """)
