@@ -1,898 +1,589 @@
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle, FancyBboxPatch
-from matplotlib.collections import PatchCollection
+from matplotlib.patches import Circle, Ellipse
+from mpl_toolkits.mplot3d import Axes3D
 import warnings
 warnings.filterwarnings('ignore')
 
 # Set page config
 st.set_page_config(
-    page_title="Apollonius Circle Solver",
-    page_icon="🔵",
+    page_title="Apollonius Circles on a Sphere",
+    page_icon="🌐",
     layout="wide"
 )
 
-def solve_apollonius_algebraic(c1, r1, c2, r2, c3, r3, s1=1, s2=1, s3=1):
+def calculate_third_circle_tangent(c1, r1, c2, r2, external=True):
     """
-    Solve the Problem of Apollonius using algebraic method.
-    This is more stable than the iterative approach for well-conditioned problems.
+    Calculate positions for a third circle tangent to two given circles.
+    Returns two possible positions.
     """
-    x1, y1 = c1
-    x2, y2 = c2
-    x3, y3 = c3
+    d = np.linalg.norm(c2 - c1)
     
-    # Convert to the linear system for the radical center
-    # Each equation is of the form: 2x*xi + 2y*yi - 2r*si*ri = xi² + yi² - ri²
+    if external:
+        # External tangency
+        if d < abs(r1 - r2) or d > r1 + r2:
+            return None, None
+    else:
+        # Internal tangency
+        if d > abs(r1 - r2):
+            return None, None
     
-    A = np.array([
-        [2*(x1-x2), 2*(y1-y2), 2*(s2*r2 - s1*r1)],
-        [2*(x1-x3), 2*(y1-y3), 2*(s3*r3 - s1*r1)],
-        [2*(x2-x3), 2*(y2-y3), 2*(s3*r3 - s2*r2)]
-    ])
-    
-    b = np.array([
-        x1**2 - x2**2 + y1**2 - y2**2 + (s2*r2)**2 - (s1*r1)**2,
-        x1**2 - x3**2 + y1**2 - y3**2 + (s3*r3)**2 - (s1*r1)**2,
-        x2**2 - x3**2 + y2**2 - y3**2 + (s3*r3)**2 - (s2*r2)**2
-    ])
-    
-    try:
-        # Check if system is singular
-        if np.abs(np.linalg.det(A[:2, :2])) < 1e-10:
-            return None, None
-            
-        # Solve the overdetermined system using least squares
-        solution, _, rank, _ = np.linalg.lstsq(A, b, rcond=None)
-        
-        if rank < 2:
-            return None, None
-            
-        x, y, t = solution
-        
-        # Calculate radius from the first circle constraint
-        d1 = np.sqrt((x - x1)**2 + (y - y1)**2)
-        r = d1 - s1 * r1
-        
-        if r <= 0:
-            return None, None
-            
-        # Verify solution with all three circles
-        d2 = np.sqrt((x - x2)**2 + (y - y2)**2)
-        d3 = np.sqrt((x - x3)**2 + (y - y3)**2)
-        
-        e1 = abs(d1 - (r + s1 * r1))
-        e2 = abs(d2 - (r + s2 * r2))
-        e3 = abs(d3 - (r + s3 * r3))
-        
-        if max(e1, e2, e3) > 0.01:
-            return None, None
-            
-        return np.array([x, y]), r
-        
-    except:
+    # Direction from c1 to c2
+    if d > 0:
+        u = (c2 - c1) / d
+    else:
         return None, None
+    
+    # Perpendicular direction
+    v = np.array([-u[1], u[0]])
+    
+    # Distance from c1 to the radical axis
+    if external:
+        a = (d**2 + r1**2 - r2**2) / (2 * d)
+    else:
+        a = (d**2 - r1**2 + r2**2) / (2 * d)
+    
+    # Height of the triangle
+    h_squared = r1**2 - a**2
+    if h_squared < 0:
+        return None, None
+    h = np.sqrt(h_squared)
+    
+    # Two possible positions
+    p = c1 + a * u
+    pos1 = p + h * v
+    pos2 = p - h * v
+    
+    return pos1, pos2
+
+def create_three_tangent_circles(r1, r2, r3):
+    """
+    Create three mutually tangent circles.
+    Place circle 1 at origin, circle 2 on positive x-axis.
+    """
+    # Circle 1 at origin
+    c1 = np.array([0.0, 0.0])
+    
+    # Circle 2 on x-axis, tangent to circle 1
+    c2 = np.array([r1 + r2, 0.0])
+    
+    # Circle 3 must be tangent to both circles 1 and 2
+    # Use the formula for the third circle
+    d12 = r1 + r2
+    d13 = r1 + r3
+    d23 = r2 + r3
+    
+    # Using cosine rule to find angle
+    cos_angle = (d12**2 + d13**2 - d23**2) / (2 * d12 * d13)
+    if abs(cos_angle) > 1:
+        # Adjust radii slightly to make it possible
+        cos_angle = np.clip(cos_angle, -1, 1)
+    
+    angle = np.arccos(cos_angle)
+    
+    # Position of circle 3
+    c3 = np.array([d13 * np.cos(angle), d13 * np.sin(angle)])
+    
+    return c1, c2, c3
+
+def stereographic_projection(x, y, R=1):
+    """
+    Project a point from the plane to the sphere using stereographic projection.
+    Returns (X, Y, Z) coordinates on the sphere.
+    """
+    denom = x**2 + y**2 + 4*R**2
+    X = 4*R**2 * x / denom
+    Y = 4*R**2 * y / denom
+    Z = R * (x**2 + y**2 - 4*R**2) / denom
+    return X, Y, Z
+
+def inverse_stereographic(X, Y, Z, R=1):
+    """
+    Project a point from the sphere to the plane.
+    """
+    if Z == R:
+        return float('inf'), float('inf')
+    x = 2*R * X / (R - Z)
+    y = 2*R * Y / (R - Z)
+    return x, y
+
+def project_circle_to_sphere(center, radius, R=1, n_points=100):
+    """
+    Project a circle from the plane to the sphere.
+    Returns arrays of X, Y, Z coordinates.
+    """
+    theta = np.linspace(0, 2*np.pi, n_points)
+    x = center[0] + radius * np.cos(theta)
+    y = center[1] + radius * np.sin(theta)
+    
+    X, Y, Z = [], [], []
+    for xi, yi in zip(x, y):
+        Xi, Yi, Zi = stereographic_projection(xi, yi, R)
+        X.append(Xi)
+        Y.append(Yi)
+        Z.append(Zi)
+    
+    return np.array(X), np.array(Y), np.array(Z)
 
 def solve_apollonius_iterative(c1, r1, c2, r2, c3, r3, s1=1, s2=1, s3=1, max_iter=1000, tol=1e-8):
     """
-    Solve the Problem of Apollonius using iterative method with improved stability.
+    Solve the Problem of Apollonius using iterative method.
     """
-    # Try algebraic method first
-    center, radius = solve_apollonius_algebraic(c1, r1, c2, r2, c3, r3, s1, s2, s3)
-    if center is not None:
-        return center, radius
-    
-    # Use multiple initial guesses
-    initial_guesses = []
-    
-    # Weighted centroid
+    # Initial guess - weighted centroid
     total_r = r1 + r2 + r3
-    if total_r > 0:
-        x0 = (c1[0]*r1 + c2[0]*r2 + c3[0]*r3) / total_r
-        y0 = (c1[1]*r1 + c2[1]*r2 + c3[1]*r3) / total_r
-        r0 = total_r / 3
-        initial_guesses.append((x0, y0, r0))
+    x0 = (c1[0]*r1 + c2[0]*r2 + c3[0]*r3) / total_r
+    y0 = (c1[1]*r1 + c2[1]*r2 + c3[1]*r3) / total_r
+    r0 = total_r / 3
     
-    # Centroid
-    x0 = (c1[0] + c2[0] + c3[0]) / 3
-    y0 = (c1[1] + c2[1] + c3[1]) / 3
-    r0 = (r1 + r2 + r3) / 3
-    initial_guesses.append((x0, y0, r0))
+    x, y, r = x0, y0, r0
     
-    # Try from each circle's perspective
-    for c, r in [(c1, r1), (c2, r2), (c3, r3)]:
-        initial_guesses.append((c[0], c[1], r * 2))
-    
-    best_solution = None
-    best_error = float('inf')
-    
-    for x0, y0, r0 in initial_guesses:
-        x, y, r = x0, y0, r0
+    for iteration in range(max_iter):
+        # Calculate current distances
+        d1 = np.sqrt((x - c1[0])**2 + (y - c1[1])**2)
+        d2 = np.sqrt((x - c2[0])**2 + (y - c2[1])**2)
+        d3 = np.sqrt((x - c3[0])**2 + (y - c3[1])**2)
         
-        for iteration in range(max_iter):
-            # Calculate current distances
-            d1 = np.sqrt((x - c1[0])**2 + (y - c1[1])**2)
-            d2 = np.sqrt((x - c2[0])**2 + (y - c2[1])**2)
-            d3 = np.sqrt((x - c3[0])**2 + (y - c3[1])**2)
+        # Target distances
+        target_d1 = r + s1 * r1
+        target_d2 = r + s2 * r2
+        target_d3 = r + s3 * r3
+        
+        # Errors
+        e1 = d1 - target_d1
+        e2 = d2 - target_d2
+        e3 = d3 - target_d3
+        
+        # Check convergence
+        if abs(e1) < tol and abs(e2) < tol and abs(e3) < tol:
+            if r > 0:
+                return np.array([x, y]), r
+            else:
+                return None, None
+        
+        # Compute Jacobian elements
+        if d1 > 0:
+            dx1 = (x - c1[0]) / d1
+            dy1 = (y - c1[1]) / d1
+        else:
+            dx1, dy1 = 0, 0
             
-            # Avoid division by zero
-            d1 = max(d1, 1e-10)
-            d2 = max(d2, 1e-10)
-            d3 = max(d3, 1e-10)
+        if d2 > 0:
+            dx2 = (x - c2[0]) / d2
+            dy2 = (y - c2[1]) / d2
+        else:
+            dx2, dy2 = 0, 0
             
-            # Target distances
-            target_d1 = r + s1 * r1
-            target_d2 = r + s2 * r2
-            target_d3 = r + s3 * r3
+        if d3 > 0:
+            dx3 = (x - c3[0]) / d3
+            dy3 = (y - c3[1]) / d3
+        else:
+            dx3, dy3 = 0, 0
+        
+        # Build system matrix (Jacobian)
+        J = np.array([
+            [dx1, dy1, -1],
+            [dx2, dy2, -1],
+            [dx3, dy3, -1]
+        ])
+        
+        # Error vector
+        E = np.array([e1, e2, e3])
+        
+        # Solve for corrections using least squares
+        try:
+            delta = np.linalg.lstsq(J, -E, rcond=None)[0]
             
-            # Errors
-            e1 = d1 - target_d1
-            e2 = d2 - target_d2
-            e3 = d3 - target_d3
+            # Apply corrections with damping
+            damping = 0.7
+            x += damping * delta[0]
+            y += damping * delta[1]
+            r += damping * delta[2]
             
-            max_error = max(abs(e1), abs(e2), abs(e3))
+            # Ensure radius stays positive
+            r = max(0.01, r)
             
-            # Check convergence
-            if max_error < tol and r > 0:
-                if max_error < best_error:
-                    best_solution = (np.array([x, y]), r)
-                    best_error = max_error
-                break
-            
-            # Compute Jacobian
-            J = np.array([
-                [(x - c1[0])/d1, (y - c1[1])/d1, -1],
-                [(x - c2[0])/d2, (y - c2[1])/d2, -1],
-                [(x - c3[0])/d3, (y - c3[1])/d3, -1]
-            ])
-            
-            # Error vector
-            E = np.array([e1, e2, e3])
-            
-            try:
-                # Solve with regularization
-                JTJ = J.T @ J
-                JTE = J.T @ E
-                regularization = 1e-8 * np.eye(3)
-                delta = np.linalg.solve(JTJ + regularization, -JTE)
-                
-                # Adaptive damping based on error reduction
-                damping = 0.5 if iteration < 10 else 0.8
-                
-                # Line search for better convergence
-                alpha = 1.0
-                for _ in range(5):
-                    x_new = x + alpha * damping * delta[0]
-                    y_new = y + alpha * damping * delta[1]
-                    r_new = max(0.01, r + alpha * damping * delta[2])
-                    
-                    # Check if error decreases
-                    d1_new = np.sqrt((x_new - c1[0])**2 + (y_new - c1[1])**2)
-                    d2_new = np.sqrt((x_new - c2[0])**2 + (y_new - c2[1])**2)
-                    d3_new = np.sqrt((x_new - c3[0])**2 + (y_new - c3[1])**2)
-                    
-                    e1_new = d1_new - (r_new + s1 * r1)
-                    e2_new = d2_new - (r_new + s2 * r2)
-                    e3_new = d3_new - (r_new + s3 * r3)
-                    
-                    new_error = max(abs(e1_new), abs(e2_new), abs(e3_new))
-                    
-                    if new_error < max_error:
-                        x, y, r = x_new, y_new, r_new
-                        break
-                    else:
-                        alpha *= 0.5
-                
-            except:
-                break
+        except:
+            return None, None
     
-    return best_solution if best_solution else (None, None)
-
-def check_circle_overlap(c1, r1, c2, r2):
-    """Check if two circles overlap"""
-    dist = np.linalg.norm(c1 - c2)
-    return dist < r1 + r2
+    return np.array([x, y]), r
 
 def find_all_apollonius_circles(c1, r1, c2, r2, c3, r3):
-    """Find all possible Apollonius circles with improved validation."""
+    """
+    Find all possible Apollonius circles (up to 8 solutions).
+    """
     solutions = []
     
-    # Check for degenerate cases
-    circles = [(c1, r1), (c2, r2), (c3, r3)]
-    
-    # Check if circles are collinear
-    v1 = c2 - c1
-    v2 = c3 - c1
-    if abs(np.cross(v1, v2)) < 1e-10:
-        st.warning("The three circle centers are collinear. This is a special case that may have limited solutions.")
-    
-    # Try all 8 combinations
+    # Try all 8 combinations of internal (-1) and external (+1) tangencies
     for s1 in [1, -1]:
         for s2 in [1, -1]:
             for s3 in [1, -1]:
                 center, radius = solve_apollonius_iterative(c1, r1, c2, r2, c3, r3, s1, s2, s3)
                 
                 if center is not None and radius is not None and radius > 0:
-                    # Validate solution
+                    # Check if this is internal tangency to a smaller circle (invalid)
                     valid = True
-                    
-                    # Check internal tangency constraints
-                    if s1 == -1 and radius < r1 - 1e-6:
+                    if s1 == -1 and radius < r1:
                         valid = False
-                    if s2 == -1 and radius < r2 - 1e-6:
+                    if s2 == -1 and radius < r2:
                         valid = False
-                    if s3 == -1 and radius < r3 - 1e-6:
+                    if s3 == -1 and radius < r3:
                         valid = False
-                    
-                    # Additional validation for internal tangency
-                    if s1 == -1:
-                        d1 = np.linalg.norm(center - c1)
-                        if d1 > 1e-6 and abs(d1 + radius - r1) > 0.01:
-                            valid = False
-                    if s2 == -1:
-                        d2 = np.linalg.norm(center - c2)
-                        if d2 > 1e-6 and abs(d2 + radius - r2) > 0.01:
-                            valid = False
-                    if s3 == -1:
-                        d3 = np.linalg.norm(center - c3)
-                        if d3 > 1e-6 and abs(d3 + radius - r3) > 0.01:
-                            valid = False
                     
                     if valid:
-                        # Check for duplicates with tolerance
+                        # Check if solution is duplicate
                         is_duplicate = False
                         for sol in solutions:
-                            if np.linalg.norm(sol['center'] - center) < 0.01 and abs(sol['radius'] - radius) < 0.01:
+                            if np.linalg.norm(sol['center'] - center) < 0.1 and abs(sol['radius'] - radius) < 0.1:
                                 is_duplicate = True
                                 break
                         
                         if not is_duplicate:
-                            # Verify tangency one more time
-                            d1 = np.linalg.norm(center - c1)
-                            d2 = np.linalg.norm(center - c2)
-                            d3 = np.linalg.norm(center - c3)
-                            
-                            e1 = abs(d1 - abs(radius + s1 * r1))
-                            e2 = abs(d2 - abs(radius + s2 * r2))
-                            e3 = abs(d3 - abs(radius + s3 * r3))
-                            
-                            if max(e1, e2, e3) < 0.01:
-                                solutions.append({
-                                    'center': center,
-                                    'radius': radius,
-                                    'tangency': (s1, s2, s3),
-                                    'type': f"{'E' if s1==1 else 'I'}{'E' if s2==1 else 'I'}{'E' if s3==1 else 'I'}",
-                                    'error': max(e1, e2, e3)
-                                })
+                            solutions.append({
+                                'center': center,
+                                'radius': radius,
+                                'tangency': (s1, s2, s3),
+                                'type': f"{'E' if s1==1 else 'I'}{'E' if s2==1 else 'I'}{'E' if s3==1 else 'I'}"
+                            })
     
-    # Sort by radius
-    solutions.sort(key=lambda x: x['radius'])
     return solutions
 
-def plot_apollonius_enhanced(c1, r1, c2, r2, c3, r3, solutions, selected_solution=None):
-    """Enhanced plotting with better visualization."""
-    fig, ax = plt.subplots(1, 1, figsize=(12, 12))
-    ax.set_aspect('equal')
+def plot_apollonius_on_sphere(c1, r1, c2, r2, c3, r3, solutions, sphere_radius=1):
+    """
+    Create both 2D and 3D visualizations of the Apollonius circles.
+    """
+    fig = plt.figure(figsize=(16, 8))
     
-    # Set style
-    plt.style.use('default')
-    ax.set_facecolor('#f8f9fa')
-    fig.patch.set_facecolor('white')
+    # 2D Plot
+    ax1 = fig.add_subplot(121)
+    ax1.set_aspect('equal')
+    ax1.set_title('Apollonius Circles on Plane', fontsize=14, weight='bold')
     
-    # Plot the three given circles with gradient effect
-    circles_data = [
-        (c1, r1, 'blue', 'Circle 1'),
-        (c2, r2, 'green', 'Circle 2'),
-        (c3, r3, 'red', 'Circle 3')
-    ]
-    
-    for center, radius, color, label in circles_data:
-        # Main circle
-        circle = Circle(center, radius, fill=False, edgecolor=color, 
-                       linewidth=3, label=label, alpha=0.8)
-        ax.add_patch(circle)
-        
-        # Fill with low alpha
-        circle_fill = Circle(center, radius, fill=True, facecolor=color, 
-                           alpha=0.05, edgecolor='none')
-        ax.add_patch(circle_fill)
-        
-        # Center point
-        ax.plot(*center, 'o', color=color, markersize=10, 
-               markeredgecolor='white', markeredgewidth=2)
-        
-        # Label with background
-        ax.text(center[0], center[1]-0.3, label.split()[-1], 
-               fontsize=12, ha='center', va='top', weight='bold',
-               bbox=dict(boxstyle='round,pad=0.3', facecolor='white', 
-                        edgecolor=color, alpha=0.8))
+    # Plot the three given circles
+    colors = ['blue', 'green', 'red']
+    for i, (center, radius, color) in enumerate([(c1, r1, colors[0]), (c2, r2, colors[1]), (c3, r3, colors[2])]):
+        circle = Circle(center, radius, fill=False, edgecolor=color, linewidth=2.5, alpha=0.8)
+        ax1.add_patch(circle)
+        circle_fill = Circle(center, radius, fill=True, facecolor=color, alpha=0.05)
+        ax1.add_patch(circle_fill)
+        ax1.plot(*center, 'o', color=color, markersize=8, markeredgecolor='white', markeredgewidth=1.5)
+        ax1.text(center[0], center[1]-0.2, f'{i+1}', fontsize=10, ha='center', va='top', weight='bold',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor=color, alpha=0.8))
     
     # Plot solutions
     if solutions:
-        # Color palette for solutions
-        cmap = plt.cm.rainbow
-        colors = [cmap(i/max(len(solutions)-1, 1)) for i in range(len(solutions))]
-        
-        for i, (sol, color) in enumerate(zip(solutions, colors)):
-            if selected_solution is None or i == selected_solution:
-                alpha = 0.6 if selected_solution is None else 0.8
-                linewidth = 2.5 if selected_solution is None else 4
-                
-                # Determine line style based on tangency type
-                has_internal = any(t == -1 for t in sol['tangency'])
-                linestyle = '--' if has_internal else '-'
-                
-                # Solution circle
-                solution_circle = Circle(sol['center'], sol['radius'], 
-                                       fill=False, edgecolor=color, 
-                                       linewidth=linewidth, alpha=alpha,
-                                       linestyle=linestyle)
-                ax.add_patch(solution_circle)
-                
-                # Center point
-                ax.plot(*sol['center'], 'o', color=color, markersize=8,
-                       markeredgecolor='white', markeredgewidth=1.5)
-                
-                # Label
-                label_text = f"{i+1}: {sol['type']}"
-                ax.text(sol['center'][0], sol['center'][1] + 0.3, 
-                       label_text, fontsize=10, ha='center', va='bottom',
-                       bbox=dict(boxstyle='round,pad=0.3', facecolor=color, 
-                                alpha=0.3, edgecolor=color))
+        solution_colors = plt.cm.rainbow(np.linspace(0, 1, len(solutions)))
+        for i, (sol, color) in enumerate(zip(solutions, solution_colors)):
+            has_internal = any(t == -1 for t in sol['tangency'])
+            circle = Circle(sol['center'], sol['radius'], fill=False, edgecolor=color, 
+                          linewidth=2, alpha=0.7, linestyle='--' if has_internal else '-')
+            ax1.add_patch(circle)
+            ax1.plot(*sol['center'], 'o', color=color, markersize=6)
+            ax1.text(sol['center'][0], sol['center'][1]+0.2, f"{sol['type']}", 
+                    fontsize=8, ha='center', va='bottom', alpha=0.8)
     
-    # Calculate view limits
+    # Set limits for 2D plot
     all_centers = [c1, c2, c3] + [sol['center'] for sol in solutions]
     all_radii = [r1, r2, r3] + [sol['radius'] for sol in solutions]
+    x_coords = [c[0] for c in all_centers]
+    y_coords = [c[1] for c in all_centers]
+    margin = max(all_radii) * 1.5 if all_radii else 2
+    ax1.set_xlim(min(x_coords) - margin, max(x_coords) + margin)
+    ax1.set_ylim(min(y_coords) - margin, max(y_coords) + margin)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_xlabel('X')
+    ax1.set_ylabel('Y')
     
-    if all_centers:
-        x_coords = [c[0] for c in all_centers]
-        y_coords = [c[1] for c in all_centers]
+    # 3D Plot on Sphere
+    ax2 = fig.add_subplot(122, projection='3d')
+    ax2.set_title('Circles Projected onto Sphere', fontsize=14, weight='bold')
+    
+    # Draw the sphere
+    u = np.linspace(0, 2 * np.pi, 50)
+    v = np.linspace(0, np.pi, 50)
+    x_sphere = sphere_radius * np.outer(np.cos(u), np.sin(v))
+    y_sphere = sphere_radius * np.outer(np.sin(u), np.sin(v))
+    z_sphere = sphere_radius * np.outer(np.ones(np.size(u)), np.cos(v))
+    ax2.plot_surface(x_sphere, y_sphere, z_sphere, alpha=0.1, color='lightgray')
+    
+    # Project and plot the three given circles on the sphere
+    for i, (center, radius, color) in enumerate([(c1, r1, colors[0]), (c2, r2, colors[1]), (c3, r3, colors[2])]):
+        X, Y, Z = project_circle_to_sphere(center, radius, sphere_radius)
+        ax2.plot(X, Y, Z, color=color, linewidth=3, alpha=0.9, label=f'Circle {i+1}')
         
-        margin = max(all_radii) * 1.5 if all_radii else 5
-        ax.set_xlim(min(x_coords) - margin, max(x_coords) + margin)
-        ax.set_ylim(min(y_coords) - margin, max(y_coords) + margin)
+        # Plot center point
+        Xc, Yc, Zc = stereographic_projection(center[0], center[1], sphere_radius)
+        ax2.scatter([Xc], [Yc], [Zc], color=color, s=100, edgecolor='white', linewidth=2)
     
-    # Grid and axes
-    ax.grid(True, alpha=0.3, linestyle=':', linewidth=1)
-    ax.axhline(y=0, color='gray', linewidth=0.5, alpha=0.5)
-    ax.axvline(x=0, color='gray', linewidth=0.5, alpha=0.5)
-    
-    # Labels
-    ax.set_xlabel('X', fontsize=14, weight='bold')
-    ax.set_ylabel('Y', fontsize=14, weight='bold')
-    ax.set_title('Apollonius Circles: Finding Circles Tangent to Three Given Circles', 
-                fontsize=16, weight='bold', pad=20)
-    
-    # Legend
-    legend_text = (
-        'Tangency Types:\n'
-        'E = External (outside)\n'
-        'I = Internal (inside)\n'
-        'Solid line = All external\n'
-        'Dashed line = Some internal'
-    )
-    ax.text(0.02, 0.98, legend_text, transform=ax.transAxes, 
-           fontsize=11, verticalalignment='top',
-           bbox=dict(boxstyle='round,pad=0.5', facecolor='white', 
-                    edgecolor='gray', alpha=0.9))
-    
-    # Add solution count
+    # Project and plot solutions on the sphere
     if solutions:
-        count_text = f'Found {len(solutions)} solution{"s" if len(solutions) != 1 else ""}'
-        ax.text(0.98, 0.02, count_text, transform=ax.transAxes, 
-               fontsize=12, ha='right', va='bottom',
-               bbox=dict(boxstyle='round,pad=0.5', facecolor='lightgreen', 
-                        alpha=0.8))
+        for i, (sol, color) in enumerate(zip(solutions, solution_colors)):
+            X, Y, Z = project_circle_to_sphere(sol['center'], sol['radius'], sphere_radius)
+            has_internal = any(t == -1 for t in sol['tangency'])
+            ax2.plot(X, Y, Z, color=color, linewidth=2, alpha=0.7, 
+                    linestyle='--' if has_internal else '-', label=f"{sol['type']}")
+    
+    # Set 3D plot properties
+    ax2.set_box_aspect([1,1,1])
+    ax2.set_xlabel('X')
+    ax2.set_ylabel('Y')
+    ax2.set_zlabel('Z')
+    ax2.view_init(elev=20, azim=45)
+    
+    # Add legend to 3D plot
+    ax2.legend(loc='upper left', fontsize=8, bbox_to_anchor=(1.05, 1))
     
     plt.tight_layout()
     return fig
 
 # Streamlit App
-st.title("🔵 Advanced Apollonius Circle Solver")
-st.markdown("### Find all circles tangent to three given circles")
+st.title("🌐 Apollonius Circles on a Sphere")
+st.markdown("### Three Mutually Tangent Circles and Their Apollonius Solutions")
+
+st.markdown("""
+This app creates three mutually tangent circles and finds all Apollonius circles 
+(circles tangent to all three). The circles are then projected onto a sphere using 
+stereographic projection, showing how planar circles become circles on the sphere.
+""")
 
 # Create tabs
-tab1, tab2, tab3 = st.tabs(["🎯 Solver", "📚 Theory", "🎮 Interactive Mode"])
+tab1, tab2, tab3 = st.tabs(["🎯 Main Solver", "📚 Theory", "🎮 Interactive Controls"])
 
 with tab1:
-    col1, col2 = st.columns([1, 2])
+    col1, col2 = st.columns([1, 3])
     
     with col1:
-        st.markdown("### Define Three Circles")
+        st.markdown("### Circle Configuration")
         
-        # Check if we need to load preset values
-        if 'load_preset' in st.session_state and st.session_state.load_preset:
-            default_x1 = st.session_state.get('preset_x1', 0.0)
-            default_y1 = st.session_state.get('preset_y1', 0.0)
-            default_r1 = st.session_state.get('preset_r1', 3.0)
-            default_x2 = st.session_state.get('preset_x2', 5.0)
-            default_y2 = st.session_state.get('preset_y2', 0.0)
-            default_r2 = st.session_state.get('preset_r2', 2.0)
-            default_x3 = st.session_state.get('preset_x3', 2.5)
-            default_y3 = st.session_state.get('preset_y3', 4.0)
-            default_r3 = st.session_state.get('preset_r3', 2.5)
-            st.session_state.load_preset = False
-        else:
-            default_x1 = 0.0
-            default_y1 = 0.0
-            default_r1 = 3.0
-            default_x2 = 5.0
-            default_y2 = 0.0
-            default_r2 = 2.0
-            default_x3 = 2.5
-            default_y3 = 4.0
-            default_r3 = 2.5
+        # Input for the three radii
+        st.markdown("**Define Three Mutually Tangent Circles**")
         
-        # Circle 1
-        st.markdown("**Circle 1** 🔵")
-        col1a, col1b = st.columns(2)
-        with col1a:
-            x1 = st.number_input("Center X₁", value=default_x1, step=0.5, key="x1")
-            r1 = st.number_input("Radius r₁", value=default_r1, min_value=0.1, step=0.5, key="r1")
-        with col1b:
-            y1 = st.number_input("Center Y₁", value=default_y1, step=0.5, key="y1")
-        
-        # Circle 2
-        st.markdown("**Circle 2** 🟢")
-        col2a, col2b = st.columns(2)
-        with col2a:
-            x2 = st.number_input("Center X₂", value=default_x2, step=0.5, key="x2")
-            r2 = st.number_input("Radius r₂", value=default_r2, min_value=0.1, step=0.5, key="r2")
-        with col2b:
-            y2 = st.number_input("Center Y₂", value=default_y2, step=0.5, key="y2")
-        
-        # Circle 3
-        st.markdown("**Circle 3** 🔴")
-        col3a, col3b = st.columns(2)
-        with col3a:
-            x3 = st.number_input("Center X₃", value=default_x3, step=0.5, key="x3")
-            r3 = st.number_input("Radius r₃", value=default_r3, min_value=0.1, step=0.5, key="r3")
-        with col3b:
-            y3 = st.number_input("Center Y₃", value=default_y3, step=0.5, key="y3")
+        r1 = st.slider("Radius of Circle 1 🔵", 0.5, 5.0, 2.0, 0.1)
+        r2 = st.slider("Radius of Circle 2 🟢", 0.5, 5.0, 1.5, 0.1)
+        r3 = st.slider("Radius of Circle 3 🔴", 0.5, 5.0, 1.0, 0.1)
         
         st.markdown("---")
         
-        # Preset configurations
-        st.markdown("### Preset Configurations")
-        
-        preset_configs = {
-            "Classic Triangle": {
-                "circles": [(-3.0, 0.0, 2.0), (3.0, 0.0, 2.0), (0.0, 3.0, 1.5)],
-                "description": "Three circles forming a triangle"
-            },
-            "Nested Circles": {
-                "circles": [(0.0, 0.0, 5.0), (2.0, 0.0, 1.0), (-1.0, 1.0, 0.8)],
-                "description": "One large circle with two smaller inside"
-            },
-            "Symmetric": {
-                "circles": [(-2.0, -1.0, 1.5), (2.0, -1.0, 1.5), (0.0, 2.0, 1.5)],
-                "description": "Three equal circles in triangular arrangement"
-            },
-            "Chain": {
-                "circles": [(0.0, 0.0, 2.0), (4.0, 0.0, 1.5), (6.5, 0.0, 1.0)],
-                "description": "Three circles in a line"
-            },
-            "Kissing Circles": {
-                "circles": [(0.0, 0.0, 3.0), (6.0, 0.0, 3.0), (3.0, 5.196, 3.0)],
-                "description": "Three mutually tangent circles"
-            }
-        }
-        
-        selected_preset = st.selectbox(
-            "Choose a preset:",
-            ["Custom"] + list(preset_configs.keys())
-        )
-        
-        if selected_preset != "Custom":
-            config = preset_configs[selected_preset]
-            st.info(f"📝 {config['description']}")
-            if st.button(f"Load {selected_preset}"):
-                circles = config["circles"]
-                # Use a different key prefix to avoid conflicts
-                st.session_state.preset_x1, st.session_state.preset_y1, st.session_state.preset_r1 = circles[0]
-                st.session_state.preset_x2, st.session_state.preset_y2, st.session_state.preset_r2 = circles[1]
-                st.session_state.preset_x3, st.session_state.preset_y3, st.session_state.preset_r3 = circles[2]
-                st.session_state.load_preset = True
-                st.rerun()
+        # Sphere parameters
+        st.markdown("**Sphere Parameters**")
+        sphere_radius = st.slider("Sphere Radius", 0.5, 3.0, 1.0, 0.1)
         
         st.markdown("---")
+        
+        # Quick presets
+        st.markdown("**Quick Presets**")
+        
+        if st.button("Equal Radii", use_container_width=True):
+            r1 = r2 = r3 = 1.5
+            st.rerun()
+        
+        if st.button("Golden Ratio", use_container_width=True):
+            r1 = 2.0
+            r2 = 2.0 / 1.618
+            r3 = r2 / 1.618
+            st.rerun()
+        
+        if st.button("Fibonacci", use_container_width=True):
+            r1 = 2.0
+            r2 = 1.3
+            r3 = 0.8
+            st.rerun()
         
         # Solve button
-        solve_button = st.button("🔍 Find Tangent Circles", type="primary", use_container_width=True)
+        solve_button = st.button("🔍 Find Apollonius Circles", type="primary", use_container_width=True)
     
     with col2:
-        if solve_button:
-            # Define circles
-            c1 = np.array([x1, y1])
-            c2 = np.array([x2, y2])
-            c3 = np.array([x3, y3])
+        if solve_button or True:  # Always show visualization
+            # Create three mutually tangent circles
+            c1, c2, c3 = create_three_tangent_circles(r1, r2, r3)
             
-            # Check for special cases
-            st.markdown("### Analysis")
-            
-            # Check distances
-            d12 = np.linalg.norm(c1 - c2)
-            d13 = np.linalg.norm(c1 - c3)
-            d23 = np.linalg.norm(c2 - c3)
+            # Display configuration info
+            st.markdown("### Configuration Analysis")
             
             info_cols = st.columns(3)
             with info_cols[0]:
+                d12 = np.linalg.norm(c2 - c1)
                 st.metric("Distance 1↔2", f"{d12:.3f}")
-                rel = "Separate" if d12 > r1 + r2 else "Overlapping" if d12 < abs(r1 - r2) else "Tangent"
-                st.caption(rel)
+                st.caption(f"Sum of radii: {r1 + r2:.3f}")
             
             with info_cols[1]:
+                d13 = np.linalg.norm(c3 - c1)
                 st.metric("Distance 1↔3", f"{d13:.3f}")
-                rel = "Separate" if d13 > r1 + r3 else "Overlapping" if d13 < abs(r1 - r3) else "Tangent"
-                st.caption(rel)
+                st.caption(f"Sum of radii: {r1 + r3:.3f}")
             
             with info_cols[2]:
+                d23 = np.linalg.norm(c3 - c2)
                 st.metric("Distance 2↔3", f"{d23:.3f}")
-                rel = "Separate" if d23 > r2 + r3 else "Overlapping" if d23 < abs(r2 - r3) else "Tangent"
-                st.caption(rel)
+                st.caption(f"Sum of radii: {r2 + r3:.3f}")
             
-            # Find solutions
-            with st.spinner("Solving Apollonius problem..."):
+            # Verify mutual tangency
+            tangency_errors = [
+                abs(d12 - (r1 + r2)),
+                abs(d13 - (r1 + r3)),
+                abs(d23 - (r2 + r3))
+            ]
+            max_error = max(tangency_errors)
+            
+            if max_error < 0.01:
+                st.success(f"✅ Circles are mutually tangent (max error: {max_error:.6f})")
+            else:
+                st.warning(f"⚠️ Circles are approximately tangent (max error: {max_error:.6f})")
+            
+            # Find Apollonius circles
+            with st.spinner("Finding Apollonius circles..."):
                 solutions = find_all_apollonius_circles(c1, r1, c2, r2, c3, r3)
             
             if solutions:
-                st.success(f"✅ Found {len(solutions)} solution{'s' if len(solutions) != 1 else ''}!")
+                st.info(f"Found {len(solutions)} Apollonius circle(s)")
                 
-                # Create plot
-                fig = plot_apollonius_enhanced(c1, r1, c2, r2, c3, r3, solutions)
+                # Create visualization
+                fig = plot_apollonius_on_sphere(c1, r1, c2, r2, c3, r3, solutions, sphere_radius)
                 st.pyplot(fig)
                 
                 # Solution details
                 st.markdown("### Solution Details")
                 
-                # Create columns for solution cards
-                sol_cols = st.columns(min(len(solutions), 3))
-                
+                sol_cols = st.columns(min(len(solutions), 4))
                 for i, sol in enumerate(solutions):
-                    col_idx = i % min(len(solutions), 3)
-                    with sol_cols[col_idx]:
-                        with st.expander(f"**Solution {i+1}: {sol['type']}**", expanded=(i==0)):
-                            st.markdown(f"**Center:** ({sol['center'][0]:.3f}, {sol['center'][1]:.3f})")
-                            st.markdown(f"**Radius:** {sol['radius']:.3f}")
-                            st.markdown(f"**Max Error:** {sol['error']:.6f}")
-                            
-                            st.markdown("**Tangency:**")
-                            tangency_info = []
-                            symbols = ['🔵', '🟢', '🔴']
-                            for j, (s, sym) in enumerate(zip(sol['tangency'], symbols)):
-                                tang_type = "External" if s == 1 else "Internal"
-                                tangency_info.append(f"{sym} Circle {j+1}: {tang_type}")
-                            for info in tangency_info:
-                                st.markdown(f"• {info}")
-                            
-                            # Verification metrics
-                            st.markdown("**Distance Verification:**")
-                            d1 = np.linalg.norm(sol['center'] - c1)
-                            d2 = np.linalg.norm(sol['center'] - c2)
-                            d3 = np.linalg.norm(sol['center'] - c3)
-                            
-                            verification = [
-                                (d1, sol['radius'] + sol['tangency'][0] * r1, "Circle 1"),
-                                (d2, sol['radius'] + sol['tangency'][1] * r2, "Circle 2"),
-                                (d3, sol['radius'] + sol['tangency'][2] * r3, "Circle 3")
-                            ]
-                            
-                            for dist, expected, name in verification:
-                                error = abs(dist - abs(expected))
-                                status = "✅" if error < 0.001 else "⚠️"
-                                st.caption(f"{status} {name}: {dist:.4f} (error: {error:.6f})")
+                    with sol_cols[i % min(len(solutions), 4)]:
+                        st.markdown(f"**Solution {i+1}: {sol['type']}**")
+                        st.write(f"Center: ({sol['center'][0]:.3f}, {sol['center'][1]:.3f})")
+                        st.write(f"Radius: {sol['radius']:.3f}")
+                        
+                        # Tangency info
+                        tangency_symbols = ['🔵', '🟢', '🔴']
+                        tangency_text = []
+                        for j, (s, sym) in enumerate(zip(sol['tangency'], tangency_symbols)):
+                            tangency_text.append(f"{sym}{'E' if s==1 else 'I'}")
+                        st.write(f"Tangency: {' '.join(tangency_text)}")
             else:
-                st.error("❌ No solutions found. The circles might be in a degenerate configuration.")
+                st.error("No Apollonius circles found")
                 
-                # Still show the plot
-                fig = plot_apollonius_enhanced(c1, r1, c2, r2, c3, r3, [])
+                # Still show the three circles
+                fig = plot_apollonius_on_sphere(c1, r1, c2, r2, c3, r3, [], sphere_radius)
                 st.pyplot(fig)
 
 with tab2:
     st.markdown("""
-    ## The Problem of Apollonius
+    ## Apollonius Circles on a Sphere
     
-    The Problem of Apollonius, posed by Apollonius of Perga (c. 262–190 BC), is one of the most famous problems in geometry:
+    ### Mutually Tangent Circles
     
-    > **Given three circles in the plane, find all circles that are tangent to all three.**
+    Three circles are **mutually tangent** if each circle is tangent to the other two. 
+    Given three radii $r_1$, $r_2$, and $r_3$, we can construct three mutually tangent circles by:
     
-    ### Historical Context
+    1. Placing circle 1 at the origin
+    2. Placing circle 2 on the positive x-axis at distance $r_1 + r_2$
+    3. Calculating the position of circle 3 using the constraint that it must be tangent to both
     
-    Apollonius wrote about this problem in his lost work "Tangencies" (Ἐπαφαί). The problem has fascinated mathematicians for over 2000 years and has connections to:
-    - Inversive geometry
-    - Complex analysis
-    - Algebraic geometry
-    - Computer graphics and CAD systems
+    The distances between centers must satisfy:
+    - $d_{12} = r_1 + r_2$
+    - $d_{13} = r_1 + r_3$
+    - $d_{23} = r_2 + r_3$
     
-    ### Mathematical Foundation
+    ### Stereographic Projection
     
-    #### Tangency Conditions
+    **Stereographic projection** maps the plane to a sphere by:
+    1. Placing a sphere tangent to the plane at the origin
+    2. Drawing lines from the "north pole" of the sphere through points on the plane
+    3. The intersection of these lines with the sphere gives the projection
     
-    For a solution circle with center $(x, y)$ and radius $r$ to be tangent to a given circle with center $(x_i, y_i)$ and radius $r_i$:
+    For a sphere of radius $R$ centered at $(0, 0, R)$, the projection formulas are:
     
-    - **External tangency:** $\sqrt{(x-x_i)^2 + (y-y_i)^2} = r + r_i$
-    - **Internal tangency:** $\sqrt{(x-x_i)^2 + (y-y_i)^2} = |r - r_i|$
+    $$X = \\frac{4R^2 x}{x^2 + y^2 + 4R^2}$$
     
-    #### Solution Types
+    $$Y = \\frac{4R^2 y}{x^2 + y^2 + 4R^2}$$
     
-    Each solution is characterized by three letters (E or I) indicating the type of tangency with each given circle:
+    $$Z = R\\frac{x^2 + y^2 - 4R^2}{x^2 + y^2 + 4R^2}$$
     
-    | Type | Description | Example |
-    |------|-------------|---------|
-    | EEE | External to all three | Most common case |
-    | EEI | External to two, internal to one | Mixed tangency |
-    | EII | External to one, internal to two | Less common |
-    | III | Internal to all three | Only when one contains others |
+    ### Properties of Stereographic Projection
     
-    ### Number of Solutions
+    1. **Circles map to circles**: Circles on the plane map to circles on the sphere (lines map to circles through the north pole)
+    2. **Conformal**: Angles are preserved
+    3. **Not area-preserving**: Areas are distorted, with greater distortion farther from the origin
     
-    In general, there can be up to **8 solutions**, corresponding to the $2^3 = 8$ possible combinations of internal/external tangencies. However:
+    ### The Descartes Circle Theorem
     
-    - Some configurations have fewer solutions
-    - Degenerate cases (e.g., collinear centers) may have infinite solutions
-    - Special cases (e.g., three mutually tangent circles) have unique properties
+    For four mutually tangent circles with curvatures $k_1, k_2, k_3, k_4$ (where $k = 1/r$):
     
-    ### Solution Methods
+    $$(k_1 + k_2 + k_3 + k_4)^2 = 2(k_1^2 + k_2^2 + k_3^2 + k_4^2)$$
     
-    #### 1. Algebraic Method
-    The tangency conditions lead to a system of quadratic equations. By subtracting pairs of equations, we can eliminate quadratic terms and obtain a linear system.
-    
-    #### 2. Iterative Method (Newton-Raphson)
-    Starting from an initial guess, we iteratively refine the solution by minimizing the error in the tangency conditions.
-    
-    #### 3. Geometric Inversion
-    Using circle inversion, we can transform the problem into simpler cases, solve them, and then invert back.
-    
-    ### Special Cases
-    
-    1. **Three mutually tangent circles**: The circles tangent to all three include the circumcircle and incircle of the curvilinear triangle formed by the three circles.
-    
-    2. **Concentric circles**: When two circles are concentric, the problem reduces to finding circles tangent to two circles and passing through a point.
-    
-    3. **Collinear centers**: When the three centers are collinear, some solutions may be lines (circles with infinite radius).
+    This gives us another way to find the Apollonius circles!
     
     ### Applications
     
-    - **Engineering**: Gear design, bearing placement
-    - **Computer Graphics**: Smooth transitions between circular arcs
-    - **Architecture**: Circular arch design
-    - **Physics**: Packing problems, bubble configurations
-    
-    ### Mathematical Properties
-    
-    1. **Descartes Circle Theorem**: For four mutually tangent circles with curvatures $k_1, k_2, k_3, k_4$:
-       $(k_1 + k_2 + k_3 + k_4)^2 = 2(k_1^2 + k_2^2 + k_3^2 + k_4^2)$
-    
-    2. **Casey's Theorem**: A generalization of Ptolemy's theorem for circles.
-    
-    3. **Radical Axis**: The locus of points with equal power with respect to two circles.
+    - **Sphere packing**: Optimal arrangements of spheres
+    - **Crystallography**: Atomic arrangements in crystals
+    - **Computer graphics**: Texture mapping and projections
+    - **Complex analysis**: The Riemann sphere
     """)
 
 with tab3:
-    st.markdown("### Interactive Exploration Mode")
+    st.markdown("### Interactive Controls")
     
-    # Animation controls
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     
     with col1:
-        animate = st.checkbox("Enable Animation", value=False)
-        if animate:
-            speed = st.slider("Animation Speed", 0.1, 2.0, 1.0)
+        st.markdown("#### Visualization Options")
+        show_grid = st.checkbox("Show grid lines", value=True)
+        show_labels = st.checkbox("Show labels", value=True)
+        show_construction = st.checkbox("Show construction lines", value=False)
+        
+        st.markdown("#### 3D View Controls")
+        elevation = st.slider("Elevation angle", -90, 90, 20, 5)
+        azimuth = st.slider("Azimuth angle", 0, 360, 45, 5)
     
     with col2:
-        show_construction = st.checkbox("Show Construction Lines", value=False)
-        show_tangent_points = st.checkbox("Show Tangent Points", value=False)
-    
-    with col3:
-        color_scheme = st.selectbox(
-            "Color Scheme",
-            ["Classic", "Vibrant", "Pastel", "Monochrome"]
-        )
-    
-    # Interactive configuration
-    st.markdown("### Quick Configurations")
-    
-    config_cols = st.columns(4)
-    
-    with config_cols[0]:
-        if st.button("Random", use_container_width=True):
-            # Generate random configuration
-            st.session_state.preset_x1 = np.random.uniform(-5, 5)
-            st.session_state.preset_y1 = np.random.uniform(-5, 5)
-            st.session_state.preset_r1 = np.random.uniform(0.5, 3)
-            st.session_state.preset_x2 = np.random.uniform(-5, 5)
-            st.session_state.preset_y2 = np.random.uniform(-5, 5)
-            st.session_state.preset_r2 = np.random.uniform(0.5, 3)
-            st.session_state.preset_x3 = np.random.uniform(-5, 5)
-            st.session_state.preset_y3 = np.random.uniform(-5, 5)
-            st.session_state.preset_r3 = np.random.uniform(0.5, 3)
-            st.session_state.load_preset = True
-            st.rerun()
-    
-    with config_cols[1]:
-        if st.button("Unit Circles", use_container_width=True):
-            # Three unit circles
-            angles = np.array([0, 120, 240]) * np.pi / 180
-            for i, angle in enumerate(angles):
-                setattr(st.session_state, f'preset_x{i+1}', 2 * np.cos(angle))
-                setattr(st.session_state, f'preset_y{i+1}', 2 * np.sin(angle))
-                setattr(st.session_state, f'preset_r{i+1}', 1.0)
-            st.session_state.load_preset = True
-            st.rerun()
-    
-    with config_cols[2]:
-        if st.button("Gasket", use_container_width=True):
-            # Apollonian gasket configuration
-            st.session_state.preset_x1, st.session_state.preset_y1, st.session_state.preset_r1 = 0, 0, 3
-            st.session_state.preset_x2, st.session_state.preset_y2, st.session_state.preset_r2 = 3, 0, 1.5
-            st.session_state.preset_x3, st.session_state.preset_y3, st.session_state.preset_r3 = 1.5, 2.598, 1.5
-            st.session_state.load_preset = True
-            st.rerun()
-    
-    with config_cols[3]:
-        if st.button("Reset", use_container_width=True):
-            # Reset to default
-            st.session_state.preset_x1, st.session_state.preset_y1, st.session_state.preset_r1 = 0, 0, 3
-            st.session_state.preset_x2, st.session_state.preset_y2, st.session_state.preset_r2 = 5, 0, 2
-            st.session_state.preset_x3, st.session_state.preset_y3, st.session_state.preset_r3 = 2.5, 4, 2.5
-            st.session_state.load_preset = True
-            st.rerun()
-    
-    # Analysis tools
-    st.markdown("### Analysis Tools")
-    
-    analysis_cols = st.columns(2)
-    
-    with analysis_cols[0]:
-        st.markdown("#### Circle Relationships")
+        st.markdown("#### Analysis Tools")
         
-        # Get current values
-        c1 = np.array([st.session_state.x1, st.session_state.y1])
-        c2 = np.array([st.session_state.x2, st.session_state.y2])
-        c3 = np.array([st.session_state.x3, st.session_state.y3])
-        r1 = st.session_state.r1
-        r2 = st.session_state.r2
-        r3 = st.session_state.r3
-        
-        # Calculate relationships
-        relationships = []
-        circles = [(c1, r1, "1"), (c2, r2, "2"), (c3, r3, "3")]
-        
-        for i in range(3):
-            for j in range(i+1, 3):
-                ci, ri, ni = circles[i]
-                cj, rj, nj = circles[j]
-                d = np.linalg.norm(ci - cj)
-                
-                if abs(d - (ri + rj)) < 0.01:
-                    rel = "Externally tangent"
-                elif abs(d - abs(ri - rj)) < 0.01:
-                    rel = "Internally tangent"
-                elif d > ri + rj:
-                    rel = f"Separate (gap: {d - (ri + rj):.2f})"
-                elif d < abs(ri - rj):
-                    rel = "One contains the other"
-                else:
-                    rel = "Overlapping"
-                
-                relationships.append(f"**Circles {ni} & {nj}:** {rel}")
-        
-        for rel in relationships:
-            st.markdown(rel)
+        if 'c1' in locals():
+            # Calculate some interesting properties
+            st.markdown("**Descartes Circle Theorem Check**")
+            
+            k1, k2, k3 = 1/r1, 1/r2, 1/r3
+            st.write(f"Curvatures: k₁={k1:.3f}, k₂={k2:.3f}, k₃={k3:.3f}")
+            
+            # For each Apollonius circle, check Descartes theorem
+            if 'solutions' in locals() and solutions:
+                for i, sol in enumerate(solutions[:2]):  # Show first two
+                    k4 = 1/sol['radius']
+                    lhs = (k1 + k2 + k3 + k4)**2
+                    rhs = 2*(k1**2 + k2**2 + k3**2 + k4**2)
+                    error = abs(lhs - rhs)
+                    st.write(f"Solution {i+1}: k₄={k4:.3f}, error={error:.6f}")
     
-    with analysis_cols[1]:
-        st.markdown("#### Configuration Properties")
-        
-        # Calculate area of triangle formed by centers
-        area = 0.5 * abs(np.cross(c2 - c1, c3 - c1))
-        st.metric("Triangle Area", f"{area:.3f}")
-        
-        # Check if centers are nearly collinear
-        if area < 0.1:
-            st.warning("⚠️ Centers are nearly collinear!")
-        
-        # Calculate perimeter
-        perimeter = (np.linalg.norm(c2 - c1) + 
-                    np.linalg.norm(c3 - c2) + 
-                    np.linalg.norm(c1 - c3))
-        st.metric("Triangle Perimeter", f"{perimeter:.3f}")
-        
-        # Total area covered
-        total_area = np.pi * (r1**2 + r2**2 + r3**2)
-        st.metric("Total Circle Area", f"{total_area:.3f}")
+    st.markdown("### Export Options")
     
-    # Solve and display
-    if st.button("🎯 Analyze Configuration", type="primary", use_container_width=True):
-        solutions = find_all_apollonius_circles(c1, r1, c2, r2, c3, r3)
-        
-        if solutions:
-            # Enhanced visualization for interactive mode
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
-            
-            # Left plot: All solutions
-            ax1.set_aspect('equal')
-            ax1.set_title("All Solutions", fontsize=14, weight='bold')
-            
-            # Right plot: Solution details
-            ax2.set_aspect('equal')
-            ax2.set_title("Selected Solution Details", fontsize=14, weight='bold')
-            
-            # Plot on both axes
-            for ax in [ax1, ax2]:
-                ax.set_facecolor('#f8f9fa')
-                
-                # Plot given circles
-                for center, radius, color in [(c1, r1, 'blue'), (c2, r2, 'green'), (c3, r3, 'red')]:
-                    circle = Circle(center, radius, fill=False, edgecolor=color, linewidth=2.5, alpha=0.8)
-                    ax.add_patch(circle)
-                    ax.plot(*center, 'o', color=color, markersize=8)
-            
-            # Plot all solutions on left
-            colors = plt.cm.rainbow(np.linspace(0, 1, len(solutions)))
-            for i, (sol, color) in enumerate(zip(solutions, colors)):
-                circle = Circle(sol['center'], sol['radius'], fill=False, 
-                              edgecolor=color, linewidth=2, alpha=0.6,
-                              linestyle='--' if any(t == -1 for t in sol['tangency']) else '-')
-                ax1.add_patch(circle)
-            
-            # Set limits
-            all_centers = [c1, c2, c3] + [sol['center'] for sol in solutions]
-            all_radii = [r1, r2, r3] + [sol['radius'] for sol in solutions]
-            x_coords = [c[0] for c in all_centers]
-            y_coords = [c[1] for c in all_centers]
-            margin = max(all_radii) * 1.5
-            
-            for ax in [ax1, ax2]:
-                ax.set_xlim(min(x_coords) - margin, max(x_coords) + margin)
-                ax.set_ylim(min(y_coords) - margin, max(y_coords) + margin)
-                ax.grid(True, alpha=0.3)
-            
-            plt.tight_layout()
-            st.pyplot(fig)
-            
-            # Solution selector
-            st.markdown("### Explore Individual Solutions")
-            
-            solution_names = [f"Solution {i+1}: {sol['type']} (r={sol['radius']:.2f})" 
-                            for i, sol in enumerate(solutions)]
-            
-            selected_idx = st.selectbox("Select a solution to examine:", 
-                                      range(len(solutions)), 
-                                      format_func=lambda x: solution_names[x])
-            
-            if selected_idx is not None:
-                sol = solutions[selected_idx]
-                
-                # Display detailed analysis
-                detail_cols = st.columns(3)
-                
-                with detail_cols[0]:
-                    st.markdown("#### Geometry")
-                    st.write(f"**Center:** ({sol['center'][0]:.4f}, {sol['center'][1]:.4f})")
-                    st.write(f"**Radius:** {sol['radius']:.4f}")
-                    st.write(f"**Area:** {np.pi * sol['radius']**2:.4f}")
-                
-                with detail_cols[1]:
-                    st.markdown("#### Tangency Analysis")
-                    for i, (t, c, r) in enumerate(zip(sol['tangency'], [c1, c2, c3], [r1, r2, r3])):
-                        tang_type = "External" if t == 1 else "Internal"
-                        d = np.linalg.norm(sol['center'] - c)
-                        st.write(f"**Circle {i+1}:** {tang_type}")
-                        st.write(f"  Distance: {d:.4f}")
-                
-                with detail_cols[2]:
-                    st.markdown("#### Quality Metrics")
-                    st.write(f"**Max Error:** {sol['error']:.8f}")
-                    st.write(f"**Solution Type:** {sol['type']}")
-                    
-                    quality = "Excellent" if sol['error'] < 1e-6 else "Good" if sol['error'] < 1e-4 else "Acceptable"
-                    st.write(f"**Quality:** {quality}")
+    if st.button("Generate Python Code", use_container_width=True):
+        code = f"""
+import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+
+# Circle radii
+r1, r2, r3 = {r1}, {r2}, {r3}
+
+# Create mutually tangent circles
+c1 = np.array([0.0, 0.0])
+c2 = np.array([r1 + r2, 0.0])
+
+# Calculate c3 position
+d12, d13, d23 = r1 + r2, r1 + r3, r2 + r3
+cos_angle = (d12**2 + d13**2 - d23**2) / (2 * d12 * d13)
+angle = np.arccos(cos_angle)
+c3 = np.array([d13 * np.cos(angle), d13 * np.sin(angle)])
+
+print(f"Circle 1: center={c1}, radius={r1}")
+print(f"Circle 2: center={c2}, radius={r2}")
+print(f"Circle 3: center={c3}, radius={r3}")
+"""
+        st.code(code, language='python')
 
 # Footer
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: gray;'>
-    <p>Created with ❤️ using Streamlit and Matplotlib</p>
-    <p>Implementation includes both algebraic and iterative solvers for maximum robustness</p>
+    <p>Three mutually tangent circles projected onto a sphere using stereographic projection</p>
+    <p>Combining classical geometry with modern visualization</p>
 </div>
 """, unsafe_allow_html=True)
