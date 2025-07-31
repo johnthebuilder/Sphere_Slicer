@@ -400,32 +400,55 @@ with tab1:
     with col1:
         st.markdown("### Define Three Circles")
         
+        # Check if we need to load preset values
+        if 'load_preset' in st.session_state and st.session_state.load_preset:
+            default_x1 = st.session_state.get('preset_x1', 0.0)
+            default_y1 = st.session_state.get('preset_y1', 0.0)
+            default_r1 = st.session_state.get('preset_r1', 3.0)
+            default_x2 = st.session_state.get('preset_x2', 5.0)
+            default_y2 = st.session_state.get('preset_y2', 0.0)
+            default_r2 = st.session_state.get('preset_r2', 2.0)
+            default_x3 = st.session_state.get('preset_x3', 2.5)
+            default_y3 = st.session_state.get('preset_y3', 4.0)
+            default_r3 = st.session_state.get('preset_r3', 2.5)
+            st.session_state.load_preset = False
+        else:
+            default_x1 = 0.0
+            default_y1 = 0.0
+            default_r1 = 3.0
+            default_x2 = 5.0
+            default_y2 = 0.0
+            default_r2 = 2.0
+            default_x3 = 2.5
+            default_y3 = 4.0
+            default_r3 = 2.5
+        
         # Circle 1
         st.markdown("**Circle 1** 🔵")
         col1a, col1b = st.columns(2)
         with col1a:
-            x1 = st.number_input("Center X₁", value=0.0, step=0.5, key="x1")
-            r1 = st.number_input("Radius r₁", value=3.0, min_value=0.1, step=0.5, key="r1")
+            x1 = st.number_input("Center X₁", value=default_x1, step=0.5, key="x1")
+            r1 = st.number_input("Radius r₁", value=default_r1, min_value=0.1, step=0.5, key="r1")
         with col1b:
-            y1 = st.number_input("Center Y₁", value=0.0, step=0.5, key="y1")
+            y1 = st.number_input("Center Y₁", value=default_y1, step=0.5, key="y1")
         
         # Circle 2
         st.markdown("**Circle 2** 🟢")
         col2a, col2b = st.columns(2)
         with col2a:
-            x2 = st.number_input("Center X₂", value=5.0, step=0.5, key="x2")
-            r2 = st.number_input("Radius r₂", value=2.0, min_value=0.1, step=0.5, key="r2")
+            x2 = st.number_input("Center X₂", value=default_x2, step=0.5, key="x2")
+            r2 = st.number_input("Radius r₂", value=default_r2, min_value=0.1, step=0.5, key="r2")
         with col2b:
-            y2 = st.number_input("Center Y₂", value=0.0, step=0.5, key="y2")
+            y2 = st.number_input("Center Y₂", value=default_y2, step=0.5, key="y2")
         
         # Circle 3
         st.markdown("**Circle 3** 🔴")
         col3a, col3b = st.columns(2)
         with col3a:
-            x3 = st.number_input("Center X₃", value=2.5, step=0.5, key="x3")
-            r3 = st.number_input("Radius r₃", value=2.5, min_value=0.1, step=0.5, key="r3")
+            x3 = st.number_input("Center X₃", value=default_x3, step=0.5, key="x3")
+            r3 = st.number_input("Radius r₃", value=default_r3, min_value=0.1, step=0.5, key="r3")
         with col3b:
-            y3 = st.number_input("Center Y₃", value=4.0, step=0.5, key="y3")
+            y3 = st.number_input("Center Y₃", value=default_y3, step=0.5, key="y3")
         
         st.markdown("---")
         
@@ -465,9 +488,11 @@ with tab1:
             st.info(f"📝 {config['description']}")
             if st.button(f"Load {selected_preset}"):
                 circles = config["circles"]
-                st.session_state.x1, st.session_state.y1, st.session_state.r1 = circles[0]
-                st.session_state.x2, st.session_state.y2, st.session_state.r2 = circles[1]
-                st.session_state.x3, st.session_state.y3, st.session_state.r3 = circles[2]
+                # Use a different key prefix to avoid conflicts
+                st.session_state.preset_x1, st.session_state.preset_y1, st.session_state.preset_r1 = circles[0]
+                st.session_state.preset_x2, st.session_state.preset_y2, st.session_state.preset_r2 = circles[1]
+                st.session_state.preset_x3, st.session_state.preset_y3, st.session_state.preset_r3 = circles[2]
+                st.session_state.load_preset = True
                 st.rerun()
         
         st.markdown("---")
@@ -672,36 +697,45 @@ with tab3:
     with config_cols[0]:
         if st.button("Random", use_container_width=True):
             # Generate random configuration
-            for i in range(1, 4):
-                setattr(st.session_state, f'x{i}', np.random.uniform(-5, 5))
-                setattr(st.session_state, f'y{i}', np.random.uniform(-5, 5))
-                setattr(st.session_state, f'r{i}', np.random.uniform(0.5, 3))
+            st.session_state.preset_x1 = np.random.uniform(-5, 5)
+            st.session_state.preset_y1 = np.random.uniform(-5, 5)
+            st.session_state.preset_r1 = np.random.uniform(0.5, 3)
+            st.session_state.preset_x2 = np.random.uniform(-5, 5)
+            st.session_state.preset_y2 = np.random.uniform(-5, 5)
+            st.session_state.preset_r2 = np.random.uniform(0.5, 3)
+            st.session_state.preset_x3 = np.random.uniform(-5, 5)
+            st.session_state.preset_y3 = np.random.uniform(-5, 5)
+            st.session_state.preset_r3 = np.random.uniform(0.5, 3)
+            st.session_state.load_preset = True
             st.rerun()
     
     with config_cols[1]:
         if st.button("Unit Circles", use_container_width=True):
             # Three unit circles
             angles = np.array([0, 120, 240]) * np.pi / 180
-            for i, angle in enumerate(angles, 1):
-                setattr(st.session_state, f'x{i}', 2 * np.cos(angle))
-                setattr(st.session_state, f'y{i}', 2 * np.sin(angle))
-                setattr(st.session_state, f'r{i}', 1.0)
+            for i, angle in enumerate(angles):
+                setattr(st.session_state, f'preset_x{i+1}', 2 * np.cos(angle))
+                setattr(st.session_state, f'preset_y{i+1}', 2 * np.sin(angle))
+                setattr(st.session_state, f'preset_r{i+1}', 1.0)
+            st.session_state.load_preset = True
             st.rerun()
     
     with config_cols[2]:
         if st.button("Gasket", use_container_width=True):
             # Apollonian gasket configuration
-            st.session_state.x1, st.session_state.y1, st.session_state.r1 = 0, 0, 3
-            st.session_state.x2, st.session_state.y2, st.session_state.r2 = 3, 0, 1.5
-            st.session_state.x3, st.session_state.y3, st.session_state.r3 = 1.5, 2.598, 1.5
+            st.session_state.preset_x1, st.session_state.preset_y1, st.session_state.preset_r1 = 0, 0, 3
+            st.session_state.preset_x2, st.session_state.preset_y2, st.session_state.preset_r2 = 3, 0, 1.5
+            st.session_state.preset_x3, st.session_state.preset_y3, st.session_state.preset_r3 = 1.5, 2.598, 1.5
+            st.session_state.load_preset = True
             st.rerun()
     
     with config_cols[3]:
         if st.button("Reset", use_container_width=True):
             # Reset to default
-            st.session_state.x1, st.session_state.y1, st.session_state.r1 = 0, 0, 3
-            st.session_state.x2, st.session_state.y2, st.session_state.r2 = 5, 0, 2
-            st.session_state.x3, st.session_state.y3, st.session_state.r3 = 2.5, 4, 2.5
+            st.session_state.preset_x1, st.session_state.preset_y1, st.session_state.preset_r1 = 0, 0, 3
+            st.session_state.preset_x2, st.session_state.preset_y2, st.session_state.preset_r2 = 5, 0, 2
+            st.session_state.preset_x3, st.session_state.preset_y3, st.session_state.preset_r3 = 2.5, 4, 2.5
+            st.session_state.load_preset = True
             st.rerun()
     
     # Analysis tools
